@@ -1,3 +1,7 @@
+# ruff: noqa: E402
+# pylint: disable=wrong-import-position
+"""OrCAID inference runner — orchestrates Manager + SubAgent workflow execution."""
+
 import asyncio
 import json
 import os
@@ -6,10 +10,14 @@ from pathlib import Path
 
 import fire
 import litellm
+from dotenv import load_dotenv
 from openhands.sdk import LLM
 from openhands.workspace import DockerDevWorkspace, DockerWorkspace
 
-import core.patches  
+# Load .env from the project root (if present). Real env vars take precedence.
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
+
+
 from config import WorkflowConfig
 from core.manager import Manager
 from core.subagent import SubAgentRunner, run_subagents_parallel
@@ -17,8 +25,8 @@ from core.utils import (
     OutputLogger,
     TeeLogger,
     build_llm_kwargs,
-    build_task_module,
     build_output_dir,
+    build_task_module,
     cleanup_stale_containers,
     detect_platform,
     download_file_via_base64,
@@ -35,7 +43,10 @@ litellm.set_verbose = False
 litellm.drop_params = True
 
 
-async def run_workflow_inner(task, workflow_config, task_module, multi_agent=True, **kwargs):
+async def run_workflow_inner(
+    task, workflow_config, task_module, multi_agent=True, **_kwargs
+):
+    """Inner coroutine that executes the full manager/subagent workflow."""
     start_time = datetime.now()
 
     print("=" * 70)
@@ -145,7 +156,7 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                 runtime_end = datetime.now()
                 runtime_seconds = (runtime_end - runtime_start).total_seconds()
                 runtime_file = Path(workflow_config.output_dir) / "runtime.txt"
-                with open(runtime_file, "w") as f:
+                with open(runtime_file, "w", encoding="utf-8") as f:
                     f.write(f"{runtime_seconds:.1f}")
                 print(f"[Runtime] {runtime_seconds:.1f}s saved to {runtime_file}")
 
@@ -157,17 +168,23 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                     pytest_results = task_module.evaluate(workspace)
 
                     report_file = Path(workflow_config.output_dir) / "report.json"
-                    exit_code_file = Path(workflow_config.output_dir) / f"{task_module.config.repo_name}_pytest_exit_code.txt"
-                    test_output_file = Path(workflow_config.output_dir) / f"{task_module.config.repo_name}_test_output.txt"
+                    exit_code_file = (
+                        Path(workflow_config.output_dir)
+                        / f"{task_module.config.repo_name}_pytest_exit_code.txt"
+                    )
+                    test_output_file = (
+                        Path(workflow_config.output_dir)
+                        / f"{task_module.config.repo_name}_test_output.txt"
+                    )
 
-                    with open(report_file, "w") as f:
+                    with open(report_file, "w", encoding="utf-8") as f:
                         f.write(pytest_results["report_json"])
-                    with open(exit_code_file, "w") as f:
+                    with open(exit_code_file, "w", encoding="utf-8") as f:
                         f.write(pytest_results["exit_code"])
-                    with open(test_output_file, "w") as f:
+                    with open(test_output_file, "w", encoding="utf-8") as f:
                         f.write(pytest_results["test_output"])
 
-                    print(f"\nPytest files saved:")
+                    print("\nPytest files saved:")
                     print(f"- {report_file}")
                     print(f"- {exit_code_file}")
                     print(f"- {test_output_file}")
@@ -176,23 +193,45 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                     print("\n[Tarball] Saving final repo state...")
                     repo_name = task_module.config.repo_name
                     tarball_name = f"{repo_name}_repo.tar.gz"
-                    tarball_cmd = f"cd /workspace && tar -czf {tarball_name} {repo_name}_repo"
+                    tarball_cmd = (
+                        f"cd /workspace && tar -czf {tarball_name} {repo_name}_repo"
+                    )
                     tar_result = workspace.execute_command(tarball_cmd, timeout=300)
-                    if tar_result.exit_code == 0:
+                    if (
+                        tar_result is not None
+                        and getattr(tar_result, "exit_code", -1) == 0
+                    ):
                         final_repo_dir = Path(workflow_config.output_dir) / "final_repo"
                         final_repo_dir.mkdir(parents=True, exist_ok=True)
                         tarball_local_path = final_repo_dir / f"{repo_name}.tar.gz"
-                        success = download_file_via_base64(workspace, f"/workspace/{tarball_name}", str(tarball_local_path))
+                        success = download_file_via_base64(
+                            workspace,
+                            f"/workspace/{tarball_name}",
+                            str(tarball_local_path),
+                        )
                         if not success:
-                            print(f"[Tarball] Warning: Download failed")
+                            print("[Tarball] Warning: Download failed")
                     else:
-                        print(f"[Tarball] Warning: Failed to create tarball: {tar_result.stderr}")
+                        stderr_msg = (
+                            getattr(tar_result, "stderr", "")
+                            if tar_result is not None
+                            else "execute_command returned None"
+                        )
+                        print(
+                            f"[Tarball] Warning: Failed to create tarball: {stderr_msg}"
+                        )
 
                     # Save costs
                     total_time = (datetime.now() - start_time).total_seconds()
                     manager_metrics = extract_conversation_metrics(manager.conversation)
                     manager_metrics["duration"] = single_agent_result["duration"]
-                    save_all_costs(workflow_config.output_dir, manager_metrics, [], wall_clock_duration=total_time, model=workflow_config.model)
+                    save_all_costs(
+                        workflow_config.output_dir,
+                        manager_metrics,
+                        [],
+                        wall_clock_duration=total_time,
+                        model=workflow_config.model,
+                    )
                 else:
                     # Paperbench single-agent: run test
                     print("\n" + "-" * 60)
@@ -204,11 +243,15 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                     test_duration = (datetime.now() - test_start).total_seconds()
                     test_end = datetime.now()
 
-                    print(f"\n[Test] Results:")
-                    print(f"- reproduce.sh exists: {test_result['reproduce_script_exists']}")
+                    print("\n[Test] Results:")
+                    print(
+                        f"- reproduce.sh exists: {test_result['reproduce_script_exists']}"
+                    )
                     print(f"- reproduce.sh success: {test_result['reproduce_success']}")
-                    print(f"- reproduce duration: {test_result['reproduce_duration']:.1f}s")
-                    if test_result.get('judge_score') is not None:
+                    print(
+                        f"- reproduce duration: {test_result['reproduce_duration']:.1f}s"
+                    )
+                    if test_result.get("judge_score") is not None:
                         print(f"- Judge score: {test_result['judge_score']:.4f}")
                         print(f"- Judge nodes: {test_result['judge_num_nodes']}")
 
@@ -221,13 +264,17 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                             "judge_type": test_result["judge_type"],
                             "score": test_result["judge_score"],
                             "num_leaf_nodes": test_result["judge_num_nodes"],
-                            "num_invalid_leaf_nodes": test_result["judge_num_invalid_nodes"],
+                            "num_invalid_leaf_nodes": test_result[
+                                "judge_num_invalid_nodes"
+                            ],
                             "judge_model": test_result["judge_model"],
                             "max_depth": test_result["max_depth"],
                             "graded_task_tree": test_result["graded_task_tree"],
                         },
                         "reproduction_metadata": {
-                            "repro_script_exists": test_result["reproduce_script_exists"],
+                            "repro_script_exists": test_result[
+                                "reproduce_script_exists"
+                            ],
                             "repro_success": test_result["reproduce_success"],
                             "repro_duration": test_result["reproduce_duration"],
                             "repro_log": test_result["reproduce_log"],
@@ -236,7 +283,7 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                         "tested_at": test_end.isoformat(),
                         "total_duration": test_duration,
                     }
-                    with open(grade_path, "w") as f:
+                    with open(grade_path, "w", encoding="utf-8") as f:
                         json.dump(grade_output, f, indent=2)
                     print(f"[Grade] Saved to {grade_path}")
 
@@ -248,20 +295,28 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                     test_result_data = test_result or {}
                     manager_cost_breakdown = {
                         "test_duration": test_duration,
-                        "judge_token_usage": test_result_data.get("judge_token_usage", {}),
+                        "judge_token_usage": test_result_data.get(
+                            "judge_token_usage", {}
+                        ),
                         "judge_cost": test_result_data.get("judge_cost", 0.0),
                         "judge_model": test_result_data.get("judge_model"),
                     }
-                    save_all_costs(workflow_config.output_dir, manager_metrics, [],
-                                   wall_clock_duration=total_time,
-                                   manager_cost_breakdown=manager_cost_breakdown,
-                                   model=workflow_config.model,
-                                   paper_id=getattr(task_module.config, 'paper_id', None))
+                    save_all_costs(
+                        workflow_config.output_dir,
+                        manager_metrics,
+                        [],
+                        wall_clock_duration=total_time,
+                        manager_cost_breakdown=manager_cost_breakdown,
+                        model=workflow_config.model,
+                        paper_id=getattr(task_module.config, "paper_id", None),
+                    )
 
                 print("\n" + "=" * 70)
                 print("Single-Agent Baseline Complete")
                 print("=" * 70)
-                print(f"Total time: {(datetime.now() - start_time).total_seconds():.1f}s")
+                print(
+                    f"Total time: {(datetime.now() - start_time).total_seconds():.1f}s"
+                )
                 print(f"Iterations used: {single_agent_result['iterations']}")
                 return
 
@@ -281,9 +336,23 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
             manager.scan_and_analyze()
 
             if is_commit0:
-                print(get_manager_summary(manager.analysis_result, None, task_module.config.repo_name, "analysis"))
+                print(
+                    get_manager_summary(
+                        manager.analysis_result,
+                        None,
+                        task_module.config.repo_name,
+                        "analysis",
+                    )
+                )
             else:
-                print(get_manager_summary(manager.analysis_result, None, getattr(manager.task, 'paper_info', None), "analysis"))
+                print(
+                    get_manager_summary(
+                        manager.analysis_result,
+                        None,
+                        getattr(manager.task, "paper_info", None),
+                        "analysis",
+                    )
+                )
 
             print("\n" + "-" * 60)
             print("Step 5: Delegate Tasks")
@@ -291,25 +360,46 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
             manager.delegate_tasks()
 
             if is_commit0:
-                print(get_manager_summary(manager.analysis_result, manager.delegation_plan, task_module.config.repo_name, "delegation"))
+                print(
+                    get_manager_summary(
+                        manager.analysis_result,
+                        manager.delegation_plan,
+                        task_module.config.repo_name,
+                        "delegation",
+                    )
+                )
             else:
-                print(get_manager_summary(manager.analysis_result, manager.delegation_plan, getattr(manager.task, 'paper_info', None), "delegation"))
+                print(
+                    get_manager_summary(
+                        manager.analysis_result,
+                        manager.delegation_plan,
+                        getattr(manager.task, "paper_info", None),
+                        "delegation",
+                    )
+                )
 
             # commit0: Save manager events after scan + delegate (before subagents)
             if is_commit0 and manager.conversation:
-                events = list(manager.conversation.state.events)
+                _conv_state = getattr(manager.conversation, "state", None)
+                events = list(_conv_state.events if _conv_state is not None else [])
                 engineer_id = "manager"
-                print(f"[Manager] Saving {len(events)} events to {engineer_id}_events.jsonl...")
+                print(
+                    f"[Manager] Saving {len(events)} events to {engineer_id}_events.jsonl..."
+                )
                 for idx, event in enumerate(events):
                     serialized = serialize_event(event, idx)
                     serialized["engineer_id"] = engineer_id
                     serialized["phase"] = "scan_and_delegate"
                     serialized["start_time"] = serialized.get("timestamp")
                     if idx + 1 < len(events):
-                        next_ts = getattr(events[idx + 1], 'timestamp', None)
+                        next_ts = getattr(events[idx + 1], "timestamp", None)
                         serialized["end_time"] = next_ts
                     else:
-                        serialized["end_time"] = manager.delegation_end_time.isoformat() if manager.delegation_end_time else None
+                        serialized["end_time"] = (
+                            manager.delegation_end_time.isoformat()
+                            if manager.delegation_end_time
+                            else None
+                        )
                     output_logger.log_agent_event(engineer_id, serialized)
 
             print("\n" + "-" * 60)
@@ -319,11 +409,10 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
 
             print("\n[Verification] Listing git worktrees:")
             result = workspace.execute_command(
-                f"cd {manager.repo_dir} && git worktree list",
-                timeout=30
+                f"cd {manager.repo_dir} && git worktree list", timeout=30
             )
-            if result.exit_code == 0:
-                print(result.stdout)
+            if result is not None and getattr(result, "exit_code", -1) == 0:
+                print(getattr(result, "stdout", ""))
 
             print("\n" + "-" * 60)
             print("Step 7: Setup Subagents")
@@ -394,7 +483,10 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                 print(f"  Total results: {len(subagent_results)}")
                 for r in subagent_results:
                     status = "SUCCESS" if r.success else "FAILED"
-                    print(f"- {r.engineer_id} round {r.round_num}: {status} ({r.duration_seconds:.1f}s, ${r.cost:.4f})")
+                    print(
+                        f"- {r.engineer_id} round {r.round_num}: "
+                        f"{status} ({r.duration_seconds:.1f}s, ${r.cost:.4f})"
+                    )
 
                 for runner in runners:
                     runner.cleanup()
@@ -416,7 +508,7 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
             runtime_end = datetime.now()
             runtime_seconds = (runtime_end - runtime_start).total_seconds()
             runtime_file = Path(workflow_config.output_dir) / "runtime.txt"
-            with open(runtime_file, "w") as f:
+            with open(runtime_file, "w", encoding="utf-8") as f:
                 f.write(f"{runtime_seconds:.1f}")
             print(f"\n[Runtime] {runtime_seconds:.1f}s saved to {runtime_file}")
 
@@ -434,15 +526,21 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
 
             analysis_duration = 0
             if manager.analysis_end_time and manager.analysis_start_time:
-                analysis_duration = (manager.analysis_end_time - manager.analysis_start_time).total_seconds()
+                analysis_duration = (
+                    manager.analysis_end_time - manager.analysis_start_time
+                ).total_seconds()
             delegation_duration = 0
             if manager.delegation_end_time and manager.delegation_start_time:
-                delegation_duration = (manager.delegation_end_time - manager.delegation_start_time).total_seconds()
+                delegation_duration = (
+                    manager.delegation_end_time - manager.delegation_start_time
+                ).total_seconds()
 
             if is_commit0:
                 manager_duration = (
-                    analysis_duration + delegation_duration
-                    + manager.assign_task_total_time + manager.review_total_time
+                    analysis_duration
+                    + delegation_duration
+                    + manager.assign_task_total_time
+                    + manager.review_total_time
                     + manager.final_review_total_time
                 )
                 manager_metrics["duration"] = manager_duration
@@ -489,7 +587,7 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                         workspace, manager.repo_dir, base_commit, subagent_results
                     )
                     patch_file = Path(workflow_config.output_dir) / "patch.diff"
-                    with open(patch_file, "w") as f:
+                    with open(patch_file, "w", encoding="utf-8") as f:
                         f.write(patch_content)
                     print(f"[Patch] Saved to {patch_file}")
 
@@ -501,17 +599,23 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                 pytest_results = task_module.evaluate(workspace)
 
                 report_file = Path(workflow_config.output_dir) / "report.json"
-                exit_code_file = Path(workflow_config.output_dir) / f"{task_module.config.repo_name}_pytest_exit_code.txt"
-                test_output_file = Path(workflow_config.output_dir) / f"{task_module.config.repo_name}_test_output.txt"
+                exit_code_file = (
+                    Path(workflow_config.output_dir)
+                    / f"{task_module.config.repo_name}_pytest_exit_code.txt"
+                )
+                test_output_file = (
+                    Path(workflow_config.output_dir)
+                    / f"{task_module.config.repo_name}_test_output.txt"
+                )
 
-                with open(report_file, "w") as f:
+                with open(report_file, "w", encoding="utf-8") as f:
                     f.write(pytest_results["report_json"])
-                with open(exit_code_file, "w") as f:
+                with open(exit_code_file, "w", encoding="utf-8") as f:
                     f.write(pytest_results["exit_code"])
-                with open(test_output_file, "w") as f:
+                with open(test_output_file, "w", encoding="utf-8") as f:
                     f.write(pytest_results["test_output"])
 
-                print(f"\nPytest files saved:")
+                print("\nPytest files saved:")
                 print(f"- {report_file}")
                 print(f"- {exit_code_file}")
                 print(f"- {test_output_file}")
@@ -520,24 +624,36 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                 print("\n[Tarball] Saving final repo state...")
                 repo_name = task_module.config.repo_name
                 tarball_name = f"{repo_name}_repo.tar.gz"
-                tarball_cmd = f"cd /workspace && tar -czf {tarball_name} {repo_name}_repo"
+                tarball_cmd = (
+                    f"cd /workspace && tar -czf {tarball_name} {repo_name}_repo"
+                )
                 tar_result = workspace.execute_command(tarball_cmd, timeout=300)
-                if tar_result.exit_code == 0:
+                if tar_result is not None and getattr(tar_result, "exit_code", -1) == 0:
                     final_repo_dir = Path(workflow_config.output_dir) / "final_repo"
                     final_repo_dir.mkdir(parents=True, exist_ok=True)
                     tarball_local_path = final_repo_dir / f"{repo_name}.tar.gz"
-                    success = download_file_via_base64(workspace, f"/workspace/{tarball_name}", str(tarball_local_path))
+                    success = download_file_via_base64(
+                        workspace, f"/workspace/{tarball_name}", str(tarball_local_path)
+                    )
                     if not success:
-                        print(f"[Tarball] Warning: Download failed")
+                        print("[Tarball] Warning: Download failed")
                 else:
-                    print(f"[Tarball] Warning: Failed to create tarball: {tar_result.stderr}")
+                    stderr_msg = (
+                        getattr(tar_result, "stderr", "")
+                        if tar_result is not None
+                        else "execute_command returned None"
+                    )
+                    print(f"[Tarball] Warning: Failed to create tarball: {stderr_msg}")
 
             else:
                 # Paperbench post-parallel flow
                 manager_duration = (
-                    analysis_duration + delegation_duration
-                    + manager.assign_task_total_time + manager.review_total_time
-                    + manager.final_review_total_time + manager.test_total_time
+                    analysis_duration
+                    + delegation_duration
+                    + manager.assign_task_total_time
+                    + manager.review_total_time
+                    + manager.final_review_total_time
+                    + manager.test_total_time
                 )
                 manager_metrics["duration"] = manager_duration
 
@@ -554,11 +670,13 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
 
                 test_end = datetime.now()
 
-                print(f"\n[Test] Results:")
-                print(f"- reproduce.sh exists: {test_result['reproduce_script_exists']}")
+                print("\n[Test] Results:")
+                print(
+                    f"- reproduce.sh exists: {test_result['reproduce_script_exists']}"
+                )
                 print(f"- reproduce.sh success: {test_result['reproduce_success']}")
                 print(f"- reproduce duration: {test_result['reproduce_duration']:.1f}s")
-                if test_result.get('judge_score') is not None:
+                if test_result.get("judge_score") is not None:
                     print(f"- Judge score: {test_result['judge_score']:.4f}")
                     print(f"- Judge nodes: {test_result['judge_num_nodes']}")
 
@@ -571,7 +689,9 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                         "judge_type": test_result["judge_type"],
                         "score": test_result["judge_score"],
                         "num_leaf_nodes": test_result["judge_num_nodes"],
-                        "num_invalid_leaf_nodes": test_result["judge_num_invalid_nodes"],
+                        "num_invalid_leaf_nodes": test_result[
+                            "judge_num_invalid_nodes"
+                        ],
                         "judge_model": test_result["judge_model"],
                         "max_depth": test_result["max_depth"],
                         "graded_task_tree": test_result["graded_task_tree"],
@@ -586,15 +706,18 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                     "tested_at": test_end.isoformat(),
                     "total_duration": test_duration,
                 }
-                with open(grade_path, "w") as f:
+                with open(grade_path, "w", encoding="utf-8") as f:
                     json.dump(grade_output, f, indent=2)
                 print(f"[Grade] Saved to {grade_path}")
 
                 # Recalculate manager_duration with test time
                 manager_duration = (
-                    analysis_duration + delegation_duration
-                    + manager.assign_task_total_time + manager.review_total_time
-                    + manager.final_review_total_time + manager.test_total_time
+                    analysis_duration
+                    + delegation_duration
+                    + manager.assign_task_total_time
+                    + manager.review_total_time
+                    + manager.final_review_total_time
+                    + manager.test_total_time
                 )
                 manager_metrics["duration"] = manager_duration
 
@@ -629,24 +752,31 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
                     manager_cost_breakdown=manager_cost_breakdown,
                     model=workflow_config.model,
                     subagent_model=workflow_config.subagent_model,
-                    paper_id=getattr(task_module.config, 'paper_id', None),
+                    paper_id=getattr(task_module.config, "paper_id", None),
                 )
 
                 # Paperbench: Save manager events after everything (test included)
                 if manager.conversation:
-                    events = list(manager.conversation.state.events)
+                    _conv_state = getattr(manager.conversation, "state", None)
+                    events = list(_conv_state.events if _conv_state is not None else [])
                     engineer_id = "manager"
-                    print(f"[Manager] Saving {len(events)} events to {engineer_id}_events.jsonl...")
+                    print(
+                        f"[Manager] Saving {len(events)} events to {engineer_id}_events.jsonl..."
+                    )
                     for idx, event in enumerate(events):
                         serialized = serialize_event(event, idx)
                         serialized["engineer_id"] = engineer_id
                         serialized["phase"] = "scan_and_delegate"
                         serialized["start_time"] = serialized.get("timestamp")
                         if idx + 1 < len(events):
-                            next_ts = getattr(events[idx + 1], 'timestamp', None)
+                            next_ts = getattr(events[idx + 1], "timestamp", None)
                             serialized["end_time"] = next_ts
                         else:
-                            serialized["end_time"] = manager.delegation_end_time.isoformat() if manager.delegation_end_time else None
+                            serialized["end_time"] = (
+                                manager.delegation_end_time.isoformat()
+                                if manager.delegation_end_time
+                                else None
+                            )
                         output_logger.log_agent_event(engineer_id, serialized)
 
         finally:
@@ -663,12 +793,17 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
         if subagent_results:
             merged_count = len([r for r in subagent_results if r.merged])
             committed_count = len([r for r in subagent_results if r.success])
-            recovered_count = len([r for r in subagent_results if r.merged and not r.success])
+            recovered_count = len(
+                [r for r in subagent_results if r.merged and not r.success]
+            )
             failed_count = len([r for r in subagent_results if not r.merged])
             total_cost = sum(r.cost for r in subagent_results)
             print("\nSubagent Results:")
             print(f"- Total: {len(subagent_results)}")
-            print(f"- Merged: {merged_count} (committed: {committed_count}, recovered: {recovered_count})")
+            print(
+                f"- Merged: {merged_count} "
+                f"(committed: {committed_count}, recovered: {recovered_count})"
+            )
             print(f"- Failed: {failed_count}")
             print(f"- Total cost: ${total_cost:.4f}")
 
@@ -698,7 +833,9 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
         print(f"- {workflow_config.output_dir}/report.json")
         print(f"- {workflow_config.output_dir}/{repo_name}_pytest_exit_code.txt")
         print(f"- {workflow_config.output_dir}/{repo_name}_test_output.txt")
-        print(f"- {workflow_config.output_dir}/final_repo/{repo_name}.tar.gz (for retest.py)")
+        print(
+            f"- {workflow_config.output_dir}/final_repo/{repo_name}.tar.gz (for retest.py)"
+        )
     else:
         print("\nOutput files saved:")
         print(f"- {workflow_config.output_dir}/outputs.jsonl")
@@ -710,19 +847,33 @@ async def run_workflow_inner(task, workflow_config, task_module, multi_agent=Tru
 
 
 async def run_workflow(task, workflow_config, task_module, multi_agent=True, **kwargs):
+    """Wrap run_workflow_inner with a TeeLogger that persists stdout to a timestamped log file."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = str(Path(workflow_config.output_dir) / f"run_{timestamp}.log")
 
     with TeeLogger(log_path):
         return await run_workflow_inner(
-            task, workflow_config, task_module,
-            multi_agent=multi_agent, **kwargs,
+            task,
+            workflow_config,
+            task_module,
+            multi_agent=multi_agent,
+            **kwargs,
         )
 
 
-def main(task="commit0", model=None, multi_agent=True,
-         max_iterations=50, max_subagents=4, sub_iterations=None,
-         rounds_of_chat=2, subagent_model=None, output_dir=None, **kwargs):
+def main(  # noqa: PLR0913
+    task="commit0",
+    model=None,
+    multi_agent=True,
+    max_iterations=50,
+    max_subagents=4,
+    sub_iterations=None,
+    rounds_of_chat=2,
+    subagent_model=None,
+    output_dir=None,
+    **kwargs,
+):
+    """CLI entry point — configure and launch the OrCAID workflow."""
     model_name = model or os.getenv("LLM_MODEL", "litellm_proxy/neulab/gpt-5-mini")
     subagent_model_name = subagent_model or os.getenv("LLM_SUBAGENT_MODEL")
     subagent_iters = sub_iterations if sub_iterations is not None else 50
@@ -742,21 +893,30 @@ def main(task="commit0", model=None, multi_agent=True,
         workflow_config.output_dir = output_dir
     else:
         workflow_config.output_dir = build_output_dir(
-            task, model_name, workflow_config, multi_agent=multi_agent, **kwargs,
+            task,
+            model_name,
+            workflow_config,
+            multi_agent=multi_agent,
+            **kwargs,
         )
 
     Path(workflow_config.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Sync output_dir to task_module config (used by judge log_dir etc.)
-    if hasattr(task_module.config, 'output_dir'):
+    if hasattr(task_module.config, "output_dir"):
         task_module.config.output_dir = workflow_config.output_dir
 
     print(f"[Config] {workflow_config}")
 
-    asyncio.run(run_workflow(
-        task, workflow_config, task_module,
-        multi_agent=multi_agent, **kwargs,
-    ))
+    asyncio.run(
+        run_workflow(
+            task,
+            workflow_config,
+            task_module,
+            multi_agent=multi_agent,
+            **kwargs,
+        )
+    )
 
 
 if __name__ == "__main__":

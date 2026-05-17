@@ -1,20 +1,17 @@
+# ruff: noqa: D100, D101, D102, D103, D104, E501
+# pylint: disable=missing-docstring,invalid-name,too-many-lines
+
+import base64
 import json
 import os
-import re
-import sys
-import subprocess
-import base64
 import platform as plat
-from pathlib import Path
+import re
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import yaml
-from pydantic import SecretStr
-from tasks import Commit0Task, Commit0Config, PaperbenchTask, PaperbenchConfig
-from config import AnalysisResult, PaperInfo, TaskNode, SubAgentTask, DelegationPlan
-from rich.console import Console
-from rich.panel import Panel
-
 from openhands.sdk.conversation.visualizer.base import ConversationVisualizerBase
 from openhands.sdk.event import (
     ActionEvent,
@@ -27,7 +24,19 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from pydantic import SecretStr
+from rich.console import Console
+from rich.panel import Panel
 
+from config import AnalysisResult, DelegationPlan, PaperInfo, SubAgentTask, TaskNode
+from tasks import (
+    Commit0Config,
+    Commit0Task,
+    PaperbenchConfig,
+    PaperbenchTask,
+    SelfImproveConfig,
+    SelfImproveTask,
+)
 
 OBSERVATION_COLOR = "yellow"
 MESSAGE_USER_COLOR = "gold3"
@@ -59,7 +68,9 @@ class PanelVisualizer(ConversationVisualizerBase):
         super().__init__()
         self.console = Console()
         self.skip_user_messages = skip_user_messages
-        self.highlight_patterns = highlight_regex if highlight_regex is not None else DEFAULT_HIGHLIGHT_REGEX
+        self.highlight_patterns = (
+            highlight_regex if highlight_regex is not None else DEFAULT_HIGHLIGHT_REGEX
+        )
 
     def on_event(self, event):
         panel = self.create_event_panel(event)
@@ -112,19 +123,44 @@ class PanelVisualizer(ConversationVisualizerBase):
 
         if isinstance(event, SystemPromptEvent):
             title = f"[bold {SYSTEM_COLOR}]System Prompt[/bold {SYSTEM_COLOR}]"
-            return Panel(content, title=title, border_style=SYSTEM_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                border_style=SYSTEM_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, ActionEvent):
             if event.action is None:
                 title = f"[bold {ACTION_COLOR}]Agent Action (Not Executed)[/bold {ACTION_COLOR}]"
             else:
                 title = f"[bold {ACTION_COLOR}]Agent Action[/bold {ACTION_COLOR}]"
-            return Panel(content, title=title, subtitle=self.format_metrics_subtitle(), border_style=ACTION_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                subtitle=self.format_metrics_subtitle(),
+                border_style=ACTION_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, ObservationEvent):
             title = f"[bold {OBSERVATION_COLOR}]Observation[/bold {OBSERVATION_COLOR}]"
-            return Panel(content, title=title, border_style=OBSERVATION_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                border_style=OBSERVATION_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, UserRejectObservation):
             title = f"[bold {ERROR_COLOR}]User Rejected Action[/bold {ERROR_COLOR}]"
-            return Panel(content, title=title, border_style=ERROR_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                border_style=ERROR_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, MessageEvent):
             if event.llm_message and event.llm_message.role == "user":
                 if self.skip_user_messages:
@@ -134,24 +170,63 @@ class PanelVisualizer(ConversationVisualizerBase):
             else:
                 title = f"[bold {MESSAGE_ASSISTANT_COLOR}]Message from Agent[/bold {MESSAGE_ASSISTANT_COLOR}]"
                 color = MESSAGE_ASSISTANT_COLOR
-            return Panel(content, title=title, subtitle=self.format_metrics_subtitle(), border_style=color, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                subtitle=self.format_metrics_subtitle(),
+                border_style=color,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, AgentErrorEvent):
             title = f"[bold {ERROR_COLOR}]Agent Error[/bold {ERROR_COLOR}]"
-            return Panel(content, title=title, subtitle=self.format_metrics_subtitle(), border_style=ERROR_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                subtitle=self.format_metrics_subtitle(),
+                border_style=ERROR_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, PauseEvent):
             title = f"[bold {PAUSE_COLOR}]User Paused[/bold {PAUSE_COLOR}]"
-            return Panel(content, title=title, border_style=PAUSE_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                border_style=PAUSE_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, Condensation):
             title = "[bold white]Condensation[/bold white]"
-            return Panel(content, title=title, subtitle=self.format_metrics_subtitle(), border_style="white", padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                subtitle=self.format_metrics_subtitle(),
+                border_style="white",
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, CondensationRequest):
             title = f"[bold {SYSTEM_COLOR}]Condensation Request[/bold {SYSTEM_COLOR}]"
-            return Panel(content, title=title, border_style=SYSTEM_COLOR, padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                border_style=SYSTEM_COLOR,
+                padding=PANEL_PADDING,
+                expand=True,
+            )
         elif isinstance(event, ConversationStateUpdateEvent):
             return None
         else:
             title = f"[bold white]UNKNOWN Event: {type(event).__name__}[/bold white]"
-            return Panel(content, title=title, border_style="white", padding=PANEL_PADDING, expand=True)
+            return Panel(
+                content,
+                title=title,
+                border_style="white",
+                padding=PANEL_PADDING,
+                expand=True,
+            )
 
 
 class OutputLogger:
@@ -177,7 +252,7 @@ class OutputLogger:
 
     def log(self, agent_id, message):
         log_file = self.agent_logs_dir / f"{agent_id}.log"
-        with open(log_file, "a") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"{message}\n")
 
     def get_agent_log_file(self, agent_id):
@@ -212,13 +287,13 @@ class OutputLogger:
             "content": content or {},
         }
 
-        with open(self.output_file, "a") as f:
+        with open(self.output_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
 
         return event
 
     def log_raw_event(self, event_data):
-        with open(self.events_file, "a") as f:
+        with open(self.events_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(event_data) + "\n")
 
     def get_agent_events_file(self, agent_id):
@@ -364,7 +439,7 @@ class OutputLogger:
         event_data["event_index"] = self.agent_event_counters[agent_id]
 
         agent_file = self.get_agent_events_file(agent_id)
-        with open(agent_file, "a") as f:
+        with open(agent_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(event_data) + "\n")
 
     def clear_agent_events(self, agent_id):
@@ -376,9 +451,9 @@ class OutputLogger:
 
 class TeeLogger:
 
-    ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+    ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-    def __init__(self, log_file_path, mode='w'):
+    def __init__(self, log_file_path, mode="w"):
         self.terminal = sys.stdout
         self.log_file = None
         self.log_file_path = log_file_path
@@ -386,7 +461,9 @@ class TeeLogger:
 
     def __enter__(self):
         Path(self.log_file_path).parent.mkdir(parents=True, exist_ok=True)
-        self.log_file = open(self.log_file_path, self.mode, buffering=1)
+        self.log_file = open(
+            self.log_file_path, self.mode, buffering=1, encoding="utf-8"
+        )
         sys.stdout = self
         return self
 
@@ -398,7 +475,7 @@ class TeeLogger:
     def write(self, message):
         self.terminal.write(message)
         if self.log_file:
-            clean = self.ANSI_ESCAPE_RE.sub('', message)
+            clean = self.ANSI_ESCAPE_RE.sub("", message)
             self.log_file.write(clean)
             self.log_file.flush()
 
@@ -415,34 +492,66 @@ class TeeLogger:
 
     @property
     def encoding(self):
-        return getattr(self.terminal, 'encoding', 'utf-8')
+        return getattr(self.terminal, "encoding", "utf-8")
 
 
 def cleanup_stale_containers(verbose=True):
     try:
         result = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "name=openhands",
-             "--filter", "status=exited", "-q"],
-            capture_output=True, text=True, timeout=30
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                "name=openhands",
+                "--filter",
+                "status=exited",
+                "-q",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
-        exited_containers = result.stdout.strip().split('\n')
+        exited_containers = result.stdout.strip().split("\n")
         exited_containers = [c for c in exited_containers if c]
 
         result = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "name=openhands",
-             "--filter", "status=dead", "-q"],
-            capture_output=True, text=True, timeout=30
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                "name=openhands",
+                "--filter",
+                "status=dead",
+                "-q",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
-        dead_containers = result.stdout.strip().split('\n')
+        dead_containers = result.stdout.strip().split("\n")
         dead_containers = [c for c in dead_containers if c]
 
         result = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "name=openhands",
-             "--format", "{{.ID}} {{.Status}}"],
-            capture_output=True, text=True, timeout=30
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                "name=openhands",
+                "--format",
+                "{{.ID}} {{.Status}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         removal_containers = []
-        for line in result.stdout.strip().split('\n'):
+        for line in result.stdout.strip().split("\n"):
             if line and "Removal" in line:
                 removal_containers.append(line.split()[0])
 
@@ -454,7 +563,9 @@ def cleanup_stale_containers(verbose=True):
             for container_id in all_stale:
                 subprocess.run(
                     ["docker", "rm", "-f", container_id],
-                    capture_output=True, timeout=30
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
                 )
             if verbose:
                 print(f"[Cleanup] Removed {len(all_stale)} stale containers")
@@ -464,10 +575,9 @@ def cleanup_stale_containers(verbose=True):
     except subprocess.TimeoutExpired:
         if verbose:
             print("[Cleanup] Warning: Docker cleanup timed out")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         if verbose:
             print(f"[Cleanup] Warning: Failed to cleanup containers: {e}")
-
 
 
 def load_prompts(task="commit0", prompts_path=None):
@@ -478,7 +588,7 @@ def load_prompts(task="commit0", prompts_path=None):
     if not prompts_path.exists():
         return {}
 
-    with open(prompts_path, "r") as f:
+    with open(prompts_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -491,7 +601,7 @@ def get_paper_info(config):
 
     config_path = papers_dir / "config.yaml"
     if config_path.exists():
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             paper_config = yaml.safe_load(f)
     else:
         paper_config = {"id": config.paper_id, "title": config.paper_id}
@@ -512,18 +622,18 @@ def get_paper_info(config):
 
 def load_rubric(rubric_path):
     """Load rubric from JSON file and convert to TaskNode tree."""
-    with open(rubric_path, "r") as f:
+    with open(rubric_path, "r", encoding="utf-8") as f:
         rubric_data = json.load(f)
     return TaskNode.from_dict(rubric_data)
 
 
 def sanitize_json_string(s):
-    s = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', s)
+    s = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", s)
     return s
 
 
 def parse_json_from_response(response):
-    json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*\})\s*```', response)
+    json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", response)
     if json_match:
         try:
             return json.loads(sanitize_json_string(json_match.group(1)), strict=False)
@@ -531,7 +641,7 @@ def parse_json_from_response(response):
             pass
 
     try:
-        start = response.find('{')
+        start = response.find("{")
         if start != -1:
             depth = 0
             in_string = False
@@ -540,7 +650,7 @@ def parse_json_from_response(response):
                 if escape_next:
                     escape_next = False
                     continue
-                if char == '\\' and in_string:
+                if char == "\\" and in_string:
                     escape_next = True
                     continue
                 if char == '"' and not escape_next:
@@ -548,21 +658,23 @@ def parse_json_from_response(response):
                     continue
                 if in_string:
                     continue
-                if char == '{':
+                if char == "{":
                     depth += 1
-                elif char == '}':
+                elif char == "}":
                     depth -= 1
                     if depth == 0:
-                        json_str = response[start:i + 1]
+                        json_str = response[start : i + 1]
                         return json.loads(sanitize_json_string(json_str), strict=False)
     except json.JSONDecodeError:
         pass
 
     try:
-        start = response.find('{')
-        end = response.rfind('}')
+        start = response.find("{")
+        end = response.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return json.loads(sanitize_json_string(response[start:end + 1]), strict=False)
+            return json.loads(
+                sanitize_json_string(response[start : end + 1]), strict=False
+            )
     except json.JSONDecodeError:
         pass
 
@@ -574,28 +686,28 @@ def extract_json_from_events(events, key_to_find=None):
         for event in reversed(list(events)):
             texts = []
 
-            if hasattr(event, 'llm_message') and event.llm_message:
-                if hasattr(event.llm_message, 'content'):
+            if hasattr(event, "llm_message") and event.llm_message:
+                if hasattr(event.llm_message, "content"):
                     for item in event.llm_message.content:
-                        if hasattr(item, 'text') and item.text:
+                        if hasattr(item, "text") and item.text:
                             texts.append(item.text)
 
-            if hasattr(event, 'thought') and event.thought:
+            if hasattr(event, "thought") and event.thought:
                 for item in event.thought:
                     if isinstance(item, str):
                         texts.append(item)
-                    elif hasattr(item, 'text') and item.text:
+                    elif hasattr(item, "text") and item.text:
                         texts.append(item.text)
 
-            if hasattr(event, 'reasoning_content') and event.reasoning_content:
+            if hasattr(event, "reasoning_content") and event.reasoning_content:
                 texts.append(event.reasoning_content)
 
             for text in texts:
-                if '{' in text and '}' in text:
+                if "{" in text and "}" in text:
                     parsed = parse_json_from_response(text)
                     if parsed and (key_to_find is None or key_to_find in parsed):
                         return parsed
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[Utils] Error extracting JSON: {e}")
     return None
 
@@ -636,7 +748,7 @@ def build_analysis_result(analysis_json, task_tree=None):
         result.implementation_order = sorted(
             set(result.pass_files),
             key=lambda f: blocked_by_count.get(f, 0),
-            reverse=True
+            reverse=True,
         )
 
     result.raw_analysis = analysis_json
@@ -652,30 +764,36 @@ def build_delegation_plan(delegation_json):
     plan.reasoning = first_round.get("reasoning", "")
 
     for t in first_round.get("tasks", []):
-        plan.first_round_tasks.append(SubAgentTask(
-            engineer_id=t.get("engineer_id", t.get("agent_id", "")),
-            task_id=t.get("task_id", ""),
-            task_node_id=t.get("task_node_id", ""),
-            requirements=t.get("requirements", ""),
-            instruction=t.get("instruction", ""),
-            context=t.get("context", ""),
-            estimated_complexity=t.get("estimated_complexity", t.get("complexity", "medium")),
-            task_category=t.get("task_category"),
-            file_path=t.get("file_path", ""),
-            functions_to_implement=t.get("functions_to_implement", []),
-        ))
+        plan.first_round_tasks.append(
+            SubAgentTask(
+                engineer_id=t.get("engineer_id", t.get("agent_id", "")),
+                task_id=t.get("task_id", ""),
+                task_node_id=t.get("task_node_id", ""),
+                requirements=t.get("requirements", ""),
+                instruction=t.get("instruction", ""),
+                context=t.get("context", ""),
+                estimated_complexity=t.get(
+                    "estimated_complexity", t.get("complexity", "medium")
+                ),
+                task_category=t.get("task_category"),
+                file_path=t.get("file_path", ""),
+                functions_to_implement=t.get("functions_to_implement", []),
+            )
+        )
 
     for t in delegation.get("remaining_tasks", []):
-        plan.remaining_tasks.append(SubAgentTask(
-            task_id=t.get("task_id", ""),
-            task_node_id=t.get("task_node_id", ""),
-            requirements=t.get("requirements", ""),
-            depends_on=t.get("depends_on", []),
-            reason_for_delay=t.get("reason_for_delay", ""),
-            task_category=t.get("task_category"),
-            file_path=t.get("file_path", ""),
-            functions_to_implement=t.get("functions_to_implement", []),
-        ))
+        plan.remaining_tasks.append(
+            SubAgentTask(
+                task_id=t.get("task_id", ""),
+                task_node_id=t.get("task_node_id", ""),
+                requirements=t.get("requirements", ""),
+                depends_on=t.get("depends_on", []),
+                reason_for_delay=t.get("reason_for_delay", ""),
+                task_category=t.get("task_category"),
+                file_path=t.get("file_path", ""),
+                functions_to_implement=t.get("functions_to_implement", []),
+            )
+        )
 
     plan.raw_delegation = delegation_json
     return plan
@@ -737,7 +855,9 @@ def fallback_delegation(analysis_result, max_subagents):
             deps = analysis_result.blocking_dependencies
             funcs = analysis_result.functions_by_file
 
-            first_round = [f for f in files if not [d for d in deps.get(f, []) if d in files]]
+            first_round = [
+                f for f in files if not [d for d in deps.get(f, []) if d in files]
+            ]
             remaining = [f for f in files if f not in first_round]
 
             max_agents = min(max_subagents, len(first_round))
@@ -775,7 +895,7 @@ def fallback_delegation(analysis_result, max_subagents):
             }
 
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[Utils] Error in fallback delegation: {e}")
         return None
 
@@ -794,10 +914,10 @@ def count_llm_iterations(events):
     try:
         response_ids = set()
         for event in events:
-            if hasattr(event, 'llm_response_id') and event.llm_response_id:
+            if hasattr(event, "llm_response_id") and event.llm_response_id:
                 response_ids.add(event.llm_response_id)
         return len(response_ids)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -805,69 +925,73 @@ def serialize_event(event, event_index):
     serialized = {
         "event_index": event_index,
         "event_type": type(event).__name__,
-        "timestamp": getattr(event, 'timestamp', None),
-        "llm_response_id": getattr(event, 'llm_response_id', None),
+        "timestamp": getattr(event, "timestamp", None),
+        "llm_response_id": getattr(event, "llm_response_id", None),
     }
 
-    if hasattr(event, 'action') and event.action:
+    if hasattr(event, "action") and event.action:
         action = event.action
         action_data = {
             "type": type(action).__name__,
         }
-        if hasattr(action, 'action'):
+        if hasattr(action, "action"):
             action_data["action_name"] = action.action
-        if hasattr(action, 'args'):
+        if hasattr(action, "args"):
             try:
                 action_data["args"] = dict(action.args) if action.args else {}
             except (TypeError, ValueError):
                 action_data["args"] = str(action.args)
-        if hasattr(action, 'thought') and action.thought:
+        if hasattr(action, "thought") and action.thought:
             action_data["thought"] = str(action.thought)
         serialized["action"] = action_data
 
-    if hasattr(event, 'observation') and event.observation:
+    if hasattr(event, "observation") and event.observation:
         obs = event.observation
         obs_data = {
             "type": type(obs).__name__,
         }
-        if hasattr(obs, 'content') and obs.content:
+        if hasattr(obs, "content") and obs.content:
             content = str(obs.content)
-            obs_data["content"] = content[:5000] + "..." if len(content) > 5000 else content
-        if hasattr(obs, 'output') and obs.output:
+            obs_data["content"] = (
+                content[:5000] + "..." if len(content) > 5000 else content
+            )
+        if hasattr(obs, "output") and obs.output:
             output = str(obs.output)
             obs_data["output"] = output[:5000] + "..." if len(output) > 5000 else output
-        if hasattr(obs, 'exit_code'):
+        if hasattr(obs, "exit_code"):
             obs_data["exit_code"] = obs.exit_code
         serialized["observation"] = obs_data
 
-    if hasattr(event, 'llm_message') and event.llm_message:
+    if hasattr(event, "llm_message") and event.llm_message:
         msg = event.llm_message
-        if hasattr(msg, 'content'):
+        if hasattr(msg, "content"):
             texts = []
             for item in msg.content:
-                if hasattr(item, 'text') and item.text:
+                if hasattr(item, "text") and item.text:
                     text = item.text
                     texts.append(text[:2000] + "..." if len(text) > 2000 else text)
             if texts:
                 serialized["llm_message"] = texts
 
-    if hasattr(event, 'thought') and event.thought:
+    if hasattr(event, "thought") and event.thought:
         thoughts = []
         for item in event.thought:
-            if hasattr(item, 'text') and item.text:
+            if hasattr(item, "text") and item.text:
                 text = item.text
                 thoughts.append(text[:2000] + "..." if len(text) > 2000 else text)
         if thoughts:
             serialized["thought"] = thoughts
 
-    if hasattr(event, 'reasoning_content') and event.reasoning_content:
+    if hasattr(event, "reasoning_content") and event.reasoning_content:
         content = event.reasoning_content
-        serialized["reasoning"] = content[:2000] + "..." if len(content) > 2000 else content
+        serialized["reasoning"] = (
+            content[:2000] + "..." if len(content) > 2000 else content
+        )
 
     return serialized
 
 
-def extract_conversation_metrics(conversation, debug=False):
+def extract_conversation_metrics(conversation):
     metrics = {
         "cost": 0.0,
         "prompt_tokens": 0,
@@ -877,26 +1001,36 @@ def extract_conversation_metrics(conversation, debug=False):
     }
 
     try:
-        if hasattr(conversation, '_state') and hasattr(conversation._state, '_cached_state'):
-            conversation._state._cached_state = None
+        # pylint: disable=protected-access
+        if hasattr(conversation, "_state") and hasattr(
+            conversation._state, "_cached_state"  # noqa: SLF001
+        ):
+            conversation._state._cached_state = None  # noqa: SLF001
 
-        if hasattr(conversation, 'agent') and hasattr(conversation.agent, 'llm'):
+        if hasattr(conversation, "agent") and hasattr(conversation.agent, "llm"):
             llm = conversation.agent.llm
-            if hasattr(llm, 'metrics') and llm.metrics:
+            if hasattr(llm, "metrics") and llm.metrics:
                 llm_metrics = llm.metrics
-                metrics["cost"] = getattr(llm_metrics, 'accumulated_cost', 0.0)
-                metrics["model_name"] = getattr(llm_metrics, 'model_name', "")
+                metrics["cost"] = getattr(llm_metrics, "accumulated_cost", 0.0)
+                metrics["model_name"] = getattr(llm_metrics, "model_name", "")
 
-                if hasattr(llm_metrics, 'accumulated_token_usage') and llm_metrics.accumulated_token_usage:
+                if (
+                    hasattr(llm_metrics, "accumulated_token_usage")
+                    and llm_metrics.accumulated_token_usage
+                ):
                     usage = llm_metrics.accumulated_token_usage
-                    metrics["prompt_tokens"] = getattr(usage, 'prompt_tokens', 0)
-                    metrics["completion_tokens"] = getattr(usage, 'completion_tokens', 0)
-                    metrics["total_tokens"] = metrics["prompt_tokens"] + metrics["completion_tokens"]
+                    metrics["prompt_tokens"] = getattr(usage, "prompt_tokens", 0)
+                    metrics["completion_tokens"] = getattr(
+                        usage, "completion_tokens", 0
+                    )
+                    metrics["total_tokens"] = (
+                        metrics["prompt_tokens"] + metrics["completion_tokens"]
+                    )
 
                 if metrics["cost"] > 0 or metrics["total_tokens"] > 0:
                     return metrics
 
-        if hasattr(conversation, 'conversation_stats'):
+        if hasattr(conversation, "conversation_stats"):
             stats = conversation.conversation_stats
             if stats:
                 combined = stats.get_combined_metrics()
@@ -908,8 +1042,10 @@ def extract_conversation_metrics(conversation, debug=False):
                         usage = combined.accumulated_token_usage
                         metrics["prompt_tokens"] = usage.prompt_tokens
                         metrics["completion_tokens"] = usage.completion_tokens
-                        metrics["total_tokens"] = usage.prompt_tokens + usage.completion_tokens
-    except Exception as e:
+                        metrics["total_tokens"] = (
+                            usage.prompt_tokens + usage.completion_tokens
+                        )
+    except Exception as e:  # noqa: BLE001
         print(f"[Warning] Failed to extract metrics: {e}")
 
     return metrics
@@ -943,7 +1079,7 @@ def save_all_costs(
     total_subagent_duration = 0
 
     for result in subagent_results:
-        duration = getattr(result, 'duration_seconds', 0.0)
+        duration = getattr(result, "duration_seconds", 0.0)
         agent_id = result.engineer_id
 
         if agent_id not in agent_aggregates:
@@ -1070,8 +1206,13 @@ def save_all_costs(
         "total": {
             "cost": grand_total_cost,
             "prompt_tokens": manager_prompt + total_subagent_prompt + judge_prompt,
-            "completion_tokens": manager_completion + total_subagent_completion + judge_completion,
-            "total_tokens": manager_total + total_subagent_tokens + judge_prompt + judge_completion,
+            "completion_tokens": manager_completion
+            + total_subagent_completion
+            + judge_completion,
+            "total_tokens": manager_total
+            + total_subagent_tokens
+            + judge_prompt
+            + judge_completion,
             "duration": total_work_duration,
         },
     }
@@ -1085,13 +1226,17 @@ def save_all_costs(
     if wall_clock_duration is not None:
         cost_data["total"]["wall_clock_duration"] = wall_clock_duration
 
-    with open(output_dir / "cost.json", "w") as f:
+    with open(output_dir / "cost.json", "w", encoding="utf-8") as f:
         json.dump(cost_data, f, indent=2)
     print(f"[Cost] Saved to: {output_dir / 'cost.json'}")
     if judge_section:
-        print(f"[Cost] Manager: ${manager_cost:.4f}, Subagents: ${total_subagent_cost:.4f}, Judge: ${judge_cost:.4f}, Total: ${grand_total_cost:.4f}")
+        print(
+            f"[Cost] Manager: ${manager_cost:.4f}, Subagents: ${total_subagent_cost:.4f}, Judge: ${judge_cost:.4f}, Total: ${grand_total_cost:.4f}"
+        )
     else:
-        print(f"[Cost] Manager: ${manager_cost:.4f}, Subagents: ${total_subagent_cost:.4f}, Total: ${grand_total_cost:.4f}")
+        print(
+            f"[Cost] Manager: ${manager_cost:.4f}, Subagents: ${total_subagent_cost:.4f}, Total: ${grand_total_cost:.4f}"
+        )
 
 
 def build_llm_kwargs(model_name):
@@ -1115,35 +1260,56 @@ def filter_kwargs(kwargs, key_map):
 
 def build_task_module(task, **kwargs):
     if task == "commit0":
-        init = filter_kwargs(kwargs, {
-            "repo": "repo_name",
-            "base_branch": "base_branch",
-            "docker_image_prefix": "docker_image_prefix",
-            "dataset_path": "dataset_path",
-        })
+        init = filter_kwargs(
+            kwargs,
+            {
+                "repo": "repo_name",
+                "base_branch": "base_branch",
+                "docker_image_prefix": "docker_image_prefix",
+                "dataset_path": "dataset_path",
+            },
+        )
         return Commit0Task(Commit0Config(**init))
     elif task == "paperbench":
-        init = filter_kwargs(kwargs, {
-            "paper_id": "paper_id",
-            "docker_image": "docker_image",
-            "paperbench_dir": "paperbench_dir",
-            "test_max_depth": "test_max_depth",
-            "test_reproduce_timeout": "test_reproduce_timeout",
-            "judge_type": "judge_type",
-            "judge_model": "judge_model",
-            "code_dev": "code_dev",
-            "output_dir": "output_dir",
-        })
+        init = filter_kwargs(
+            kwargs,
+            {
+                "paper_id": "paper_id",
+                "docker_image": "docker_image",
+                "paperbench_dir": "paperbench_dir",
+                "test_max_depth": "test_max_depth",
+                "test_reproduce_timeout": "test_reproduce_timeout",
+                "judge_type": "judge_type",
+                "judge_model": "judge_model",
+                "code_dev": "code_dev",
+                "output_dir": "output_dir",
+            },
+        )
         return PaperbenchTask(PaperbenchConfig(**init))
+    elif task == "self_improve":
+        init = filter_kwargs(
+            kwargs,
+            {
+                "repo_path": "repo_path",
+                "task_description": "task_description",
+            },
+        )
+        return SelfImproveTask(SelfImproveConfig(**init))
     else:
-        raise ValueError(f"Unknown task: {task}. Available: commit0, paperbench")
+        raise ValueError(
+            f"Unknown task: {task}. Available: commit0, paperbench, self_improve"
+        )
 
 
 def build_output_dir(task, model_name, workflow_config, multi_agent=True, **kwargs):
     model_short = model_name.split("/")[-1] if "/" in model_name else model_name
 
     if workflow_config.subagent_model:
-        sub_short = workflow_config.subagent_model.split("/")[-1] if "/" in workflow_config.subagent_model else workflow_config.subagent_model
+        sub_short = (
+            workflow_config.subagent_model.split("/")[-1]
+            if "/" in workflow_config.subagent_model
+            else workflow_config.subagent_model
+        )
         model_short = f"{model_short}+{sub_short}"
 
     params = (
@@ -1162,7 +1328,9 @@ def build_output_dir(task, model_name, workflow_config, multi_agent=True, **kwar
         paper_id = kwargs.get("paper_id", "rice")
         code_dev_str = "true" if kwargs.get("code_dev", True) else "false"
         params += f"_codedev={code_dev_str}"
-        return str(Path("outputs") / "paperbench" / model_short / paper_id / mode / params)
+        return str(
+            Path("outputs") / "paperbench" / model_short / paper_id / mode / params
+        )
     else:
         return str(Path("outputs") / task / model_short / mode / params)
 
@@ -1179,16 +1347,20 @@ def get_manager_summary(analysis_result, delegation_plan, identifier, phase="all
     lines = []
 
     if phase in ("analysis", "all") and analysis_result:
-        if isinstance(identifier, str) or (identifier is None and not analysis_result.task_tree):
+        if isinstance(identifier, str) or (
+            identifier is None and not analysis_result.task_tree
+        ):
             # commit0 path (identifier is repo_name string)
-            lines.extend([
-                f"\nRepository Analysis Summary",
-                f"=" * 40,
-                f"Repository: {identifier}",
-                f"Context: {analysis_result.repo_context}",
-                f"Functions to implement: {analysis_result.total_funcs}",
-                f"Files: {len(analysis_result.pass_files)}",
-            ])
+            lines.extend(
+                [
+                    "\nRepository Analysis Summary",
+                    "=" * 40,
+                    f"Repository: {identifier}",
+                    f"Context: {analysis_result.repo_context}",
+                    f"Functions to implement: {analysis_result.total_funcs}",
+                    f"Files: {len(analysis_result.pass_files)}",
+                ]
+            )
             for f in analysis_result.pass_files[:10]:
                 funcs = analysis_result.functions_by_file.get(f, [])
                 lines.append(f"  - {f} ({len(funcs)} funcs)")
@@ -1196,26 +1368,30 @@ def get_manager_summary(analysis_result, delegation_plan, identifier, phase="all
                 lines.append(f"  ... and {len(analysis_result.pass_files) - 10} more")
         else:
             # paperbench path
-            lines.extend([
-                f"\nPaper Analysis Summary",
-                f"=" * 40,
-                f"Paper: {identifier.title if identifier else 'Unknown'}",
-                f"Context: {analysis_result.paper_context}",
-                f"Total tasks: {analysis_result.total_tasks}",
-                f"Leaf tasks: {len(analysis_result.leaf_tasks)}",
-            ])
+            lines.extend(
+                [
+                    "\nPaper Analysis Summary",
+                    "=" * 40,
+                    f"Paper: {identifier.title if identifier else 'Unknown'}",
+                    f"Context: {analysis_result.paper_context}",
+                    f"Total tasks: {analysis_result.total_tasks}",
+                    f"Leaf tasks: {len(analysis_result.leaf_tasks)}",
+                ]
+            )
             for cat, count in analysis_result.task_categories.items():
                 lines.append(f"  - {cat}: {count}")
 
     if phase in ("delegation", "all") and delegation_plan:
-        lines.extend([
-            f"\nTask Delegation Summary",
-            f"=" * 40,
-            f"Agents for first round: {delegation_plan.num_agents}",
-            f"Reasoning: {delegation_plan.reasoning}",
-            f"First round tasks: {len(delegation_plan.first_round_tasks)}",
-            f"Remaining tasks: {len(delegation_plan.remaining_tasks)}",
-        ])
+        lines.extend(
+            [
+                "\nTask Delegation Summary",
+                "=" * 40,
+                f"Agents for first round: {delegation_plan.num_agents}",
+                f"Reasoning: {delegation_plan.reasoning}",
+                f"First round tasks: {len(delegation_plan.first_round_tasks)}",
+                f"Remaining tasks: {len(delegation_plan.remaining_tasks)}",
+            ]
+        )
 
     return "\n".join(lines) if lines else "No results yet."
 
@@ -1226,14 +1402,16 @@ def generate_patch(workspace, repo_dir, base_commit, subagent_results):
 
     for result in subagent_results:
         if result.success and result.git_diff:
-            agent_contributions.append({
-                "engineer_id": result.engineer_id,
-                "task_id": result.task_id,
-                "file_path": result.file_path,
-                "files_modified": result.files_modified,
-                "commit_hash": result.commit_hash,
-                "round_num": result.round_num,
-            })
+            agent_contributions.append(
+                {
+                    "engineer_id": result.engineer_id,
+                    "task_id": result.task_id,
+                    "file_path": result.file_path,
+                    "files_modified": result.files_modified,
+                    "commit_hash": result.commit_hash,
+                    "round_num": result.round_num,
+                }
+            )
 
     header = "# Multi-Agent Patch Summary\n"
     header += f"# Base commit: {base_commit}\n"
@@ -1243,17 +1421,16 @@ def generate_patch(workspace, repo_dir, base_commit, subagent_results):
     for contrib in agent_contributions:
         header += f"#   - {contrib['engineer_id']} (round {contrib['round_num']}): {contrib['task_id']}\n"
         header += f"#     File: {contrib['file_path']}\n"
-        if contrib['files_modified']:
+        if contrib["files_modified"]:
             header += f"#     Modified: {', '.join(contrib['files_modified'])}\n"
-        if contrib['commit_hash']:
+        if contrib["commit_hash"]:
             header += f"#     Commit: {contrib['commit_hash']}\n"
 
     header += "#\n"
     header += "# " + "=" * 70 + "\n\n"
 
     result = workspace.execute_command(
-        f"cd {repo_dir} && git diff {base_commit} HEAD --no-color",
-        timeout=600
+        f"cd {repo_dir} && git diff {base_commit} HEAD --no-color", timeout=600
     )
 
     if result.exit_code == 0 and result.stdout.strip():
@@ -1264,7 +1441,9 @@ def generate_patch(workspace, repo_dir, base_commit, subagent_results):
     return patch_content, agent_contributions
 
 
-def download_file_via_base64(workspace, remote_path, local_path, chunk_size=1024*1024):
+def download_file_via_base64(
+    workspace, remote_path, local_path, chunk_size=1024 * 1024
+):
     try:
         size_result = workspace.execute_command(f"stat -c%s {remote_path}", timeout=30)
         if size_result.exit_code != 0:
@@ -1274,13 +1453,15 @@ def download_file_via_base64(workspace, remote_path, local_path, chunk_size=1024
         file_size = int(size_result.stdout.strip())
         print(f"[Download] File size: {file_size / (1024*1024):.2f} MB")
 
-        with open(local_path, 'wb') as f:
+        with open(local_path, "wb") as f:
             offset = 0
             while offset < file_size:
                 cmd = f"dd if={remote_path} bs=1 skip={offset} count={chunk_size} 2>/dev/null | base64 -w 0"
                 result = workspace.execute_command(cmd, timeout=120)
                 if result.exit_code != 0:
-                    print(f"[Download] Error reading chunk at offset {offset}: {result.stderr}")
+                    print(
+                        f"[Download] Error reading chunk at offset {offset}: {result.stderr}"
+                    )
                     return False
 
                 chunk_data = base64.b64decode(result.stdout)
@@ -1288,7 +1469,7 @@ def download_file_via_base64(workspace, remote_path, local_path, chunk_size=1024
                 offset += len(chunk_data)
 
                 progress = (offset / file_size) * 100
-                print(f"[Download] Progress: {progress:.1f}%", end='\r')
+                print(f"[Download] Progress: {progress:.1f}%", end="\r")
 
                 if len(chunk_data) < chunk_size:
                     break
@@ -1296,6 +1477,6 @@ def download_file_via_base64(workspace, remote_path, local_path, chunk_size=1024
         print(f"\n[Download] Successfully saved to {local_path}")
         return True
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[Download] Error: {e}")
         return False
