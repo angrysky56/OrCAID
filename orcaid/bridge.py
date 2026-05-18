@@ -288,7 +288,7 @@ def _check_criterion(criterion: dict, subagent_result, review_result: dict) -> b
         return not subagent_result.conflict_files
 
     elif criterion_id == "success_flag":
-        return subagent_result.success is True
+        return getattr(subagent_result, "error", None) is None
 
     elif criterion_id == "test_coverage":
         # Check if test files in files_modified
