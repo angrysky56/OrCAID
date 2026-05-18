@@ -4,7 +4,6 @@ from datetime import datetime
 from openhands.sdk import Agent, Conversation
 from openhands.tools.preset.default import get_default_tools
 
-from orcaid.config import SubAgent, SubAgentResult
 from orcaid.core.utils import (
     PanelVisualizer,
     build_subagent_prompt,

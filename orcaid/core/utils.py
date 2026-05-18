@@ -24,7 +24,6 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from pydantic import SecretStr
 from rich.console import Console
 from rich.panel import Panel
 

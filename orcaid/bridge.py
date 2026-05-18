@@ -1156,7 +1156,7 @@ def run_sweep_cli():
     import sys
 
     memory_base = get_memory_base()
-    print(f"Starting OrCAID Orchestrator Memory Sweep Indexer...")
+    print("Starting OrCAID Orchestrator Memory Sweep Indexer...")
     print(f"  Memory base: {memory_base}")
     try:
         run_indexer_sweep(memory_base=memory_base)

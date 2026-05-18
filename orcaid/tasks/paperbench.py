@@ -12,7 +12,6 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -294,7 +293,7 @@ class PaperbenchTask(TaskModule):
                     submission_path = extract_dir / "submission"
                     if not submission_path.exists():
                         raise RuntimeError(
-                            f"Submission directory not found after extraction"
+                            "Submission directory not found after extraction"
                         )
 
                     agent_python = os.environ.get("JUDGE_PYTHON", sys.executable)
@@ -330,7 +329,7 @@ class PaperbenchTask(TaskModule):
                     if config.code_dev:
                         cmd.append("--code_dev")
 
-                    print(f"[PaperBench] Running judge subprocess...")
+                    print("[PaperBench] Running judge subprocess...")
                     proc = subprocess.run(
                         cmd,
                         capture_output=True,

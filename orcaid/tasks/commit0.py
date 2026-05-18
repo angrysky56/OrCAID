@@ -4,7 +4,6 @@ python -m tasks.commit0
 
 import json
 from dataclasses import dataclass
-from typing import Optional
 
 from .base import TaskModule
 

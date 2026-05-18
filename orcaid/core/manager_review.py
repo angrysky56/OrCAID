@@ -417,7 +417,7 @@ class ReviewMixin:
 
         # Trigger Synthesis Hook
         try:
-            from orcaid.bridge import synthesize_orcaid_outcome, write_compound_skill
+            from orcaid.bridge import get_memory_base, synthesize_orcaid_outcome, write_compound_skill
 
             task_type = (
                 "code_review"
