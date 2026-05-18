@@ -1,0 +1,131 @@
+task_type: research_reproduction
+version: "1.0.0"
+description: "Verification checklist for OrCAID paperbench/research reproduction subagents"
+
+pass_criteria:
+  - id: submission_exists
+    description: "Submission directory created with expected files"
+    verification_method: "verify subagent_result.submission_exists == True"
+    required: true
+    weight: 10
+    failure_message: "No submission directory found — agent may have failed to create output"
+
+  - id: reproduce_script
+    description: "reproduce.sh script exists and is executable"
+    verification_method: "verify subagent_result.reproduce_script_exists == True"
+    required: true
+    weight: 9
+    failure_message: "reproduce.sh not found or not executable"
+
+  - id: commits_made
+    description: "Subagent made commits documenting work"
+    verification_method: "verify subagent_result.git_commits > 0"
+    required: true
+    weight: 7
+    failure_message: "No commits made — no evidence of work"
+
+  - id: no_conflicts
+    description: "No merge conflicts during collection"
+    verification_method: "verify subagent_result.conflict_files is empty"
+    required: true
+    weight: 8
+    failure_message: "Merge conflict detected — requires human resolution"
+
+  - id: success_flag
+    description: "Subagent did not throw exceptions / crash"
+    verification_method: "verify subagent_result.error is None"
+    required: true
+    weight: 8
+    failure_message: "Subagent reported failure"
+
+  - id: submission_completeness
+    description: "Submission contains required paper artifacts (PDF, rubric response, etc.)"
+    verification_method: "check files in submission directory against task requirements"
+    required: true
+    weight: 7
+    failure_message: "Submission missing required artifacts per task requirements"
+
+  - id: reproduce_documented
+    description: "README or documentation explains how to reproduce results"
+    verification_method: "check for README.md or DOCUMENTATION in submission"
+    required: false
+    weight: 5
+    failure_message: "No reproduction documentation found"
+
+drift_categories:
+  phase_skip:
+    description: "Subagent completed without creating submission or reproduce.sh"
+    severity: critical
+    auto_retry: true
+    correction_template: |
+      PREVIOUS ATTEMPT: {task_id}
+      DRIFT: Submission not created per requirements.
+      EXPECTED: {requirements}
+      ACTUAL: submission_exists={submission_exists}, reproduce_script_exists={reproduce_script_exists}
+      CORRECTION: Create the complete submission structure with all required artifacts.
+
+  criteria_mismatch:
+    description: "Submission exists but missing required components"
+    severity: high
+    auto_retry: true
+    correction_template: |
+      INCOMPLETE SUBMISSION for {task_id}
+      MISSING: {missing_artifacts}
+      SUBMISSION PATH: {submission_path}
+      CORRECTION: Complete the submission with all required paperbench artifacts.
+
+  assumption_violation:
+    description: "Subagent made incorrect assumptions about paper content or structure"
+    severity: high
+    auto_retry: false
+    escalation: true
+    correction_template: |
+      WRONG ASSUMPTIONS by {engineer_id}
+      YOUR UNDERSTANDING: {subagent_understanding}
+      ACTUAL PAPER REQUIREMENTS: {actual_requirements}
+      NOTE: This requires paper content review. Escalating to human.
+
+  output_corruption:
+    description: "Submission files are corrupted or incomplete"
+    severity: high
+    auto_retry: true
+    correction_template: |
+      CORRUPTED SUBMISSION for {task_id}
+      ISSUE: {corruption_description}
+      CORRECTION: Re-create submission with proper file structure and content.
+
+  merge_conflict:
+    description: "Git merge conflict during collect_and_merge"
+    severity: high
+    auto_retry: false
+    escalation: true
+    correction_template: |
+      MERGE CONFLICT in {engineer_id}'s worktree.
+      CONFLICT FILES: {conflict_files}
+      RESOLUTION: Manual git conflict resolution required.
+      Escalating to human review.
+
+  context_bleed:
+    description: "Subagent referenced or modified another engineer's work"
+    severity: medium
+    auto_retry: true
+    correction_template: |
+      CONTEXT BLEED DETECTED — {engineer_id} accessed another engineer's submission.
+      YOUR SCOPE: {your_requirements}
+      CORRECTION: Focus only on your assigned submission components.
+
+max_retries: 1
+escalate_after: 1
+escalation_path: "human_review"
+
+scoring:
+  mode: all_required
+  partial_credit: false
+  weight_by_criteria: true
+
+expected_cost_per_complexity:
+  trivial: 0.50
+  low: 1.00
+  medium: 2.00
+  high: 4.00
+  complex: 8.00

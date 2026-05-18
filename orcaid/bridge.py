@@ -116,13 +116,22 @@ def load_checklist(task_type: str, checklist_base: Optional[Path] = None) -> dic
         with open(om_checklist, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
 
-    # Fall back to bridge's own reference checklists
+    # Fall back to bridge's own reference checklists and auto-initialize
     bridge_checklist = (
         Path(__file__).parent / "checklists" / f"checklist_{task_type}.yaml"
     )
     if bridge_checklist.exists():
-        with open(bridge_checklist, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+        try:
+            # Auto-initialize the user's local orchestrator-memory directory structure
+            om_checklist.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(bridge_checklist, om_checklist)
+            with open(om_checklist, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+        except Exception:
+            # Fallback to loading directly from the packaged templates if copying fails
+            with open(bridge_checklist, "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
 
     # Default: code_review checklist
     return {
