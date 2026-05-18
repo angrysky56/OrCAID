@@ -476,11 +476,14 @@ def write_drift_log(
     drift_lines = []
     for entry in drift_log:
         drift_lines.append(
-            f"### [{entry['severity']}] {entry['criterion_id']}\n"
-            f"{entry['failure_message']}\n"
-            f"Category: {entry['category']}\n"
+            f"### [{entry['severity'].upper()}] {entry['criterion_id']}\n"
+            f"**Failure Message:** {entry['failure_message']}\n"
+            f"**Category:** {entry['category']}\n"
         )
     drift_formatted = "\n".join(drift_lines)
+
+    # Format git diff safely in details block
+    diff_content = getattr(subagent_result, "git_diff", "") or "No git diff available."
 
     content = f"""---
 drift_log: true
@@ -510,11 +513,25 @@ re_invoke_worker_with_correction
 
 ## SubAgent Result at Time of Drift
 
-- Success: {subagent_result.success}
-- Commit: {subagent_result.commit_hash or 'none'}
-- Files modified: {subagent_result.files_modified or []}
-- Duration: {subagent_result.duration_seconds:.1f}s
-- Cost: ${subagent_result.cost:.4f}
+| Metric | Value |
+| :--- | :--- |
+| **Success** | `{subagent_result.success}` |
+| **Engineer ID** | `{subagent_result.engineer_id}` |
+| **Duration** | `{subagent_result.duration_seconds:.2f}s` |
+| **Cost** | `${subagent_result.cost:.4f}` |
+| **Actual Iterations** | `{subagent_result.actual_iterations} / {subagent_result.max_iterations}` |
+| **Error** | `{subagent_result.error or "None"}` |
+| **Files Modified** | `{subagent_result.files_modified}` |
+| **Commit Hash** | `{subagent_result.commit_hash or "N/A"}` |
+
+<details>
+<summary><b>View Git Diff</b></summary>
+
+```diff
+{diff_content}
+```
+
+</details>
 """
 
     log_path = log_dir / filename
@@ -637,7 +654,7 @@ def orcaid_reinvoke_subagent(
     loop doesn't natively support retry-within-round, so this creates
     a new SubAgentTask and assigns it through the manager.
     """
-    from config import SubAgentTask
+    from orcaid.config import SubAgentTask
 
     attempt = correction_context.get("attempt_number", 2)
     if attempt > max_retries:
@@ -941,3 +958,165 @@ All subagent results synthesized after final_review_all().
         f.write(content)
 
     return skill_path
+
+
+def parse_frontmatter(file_path: Path) -> dict:
+    """Parse YAML frontmatter from a markdown file."""
+    if not file_path.exists():
+        return {}
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                return yaml.safe_load(parts[1]) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def run_indexer_sweep(memory_base: Optional[Path] = None):
+    """
+    Sweep all verified outcomes and drift logs to rebuild the discovery.yaml index.
+    """
+    memory_base = memory_base or ORCHESTRATOR_MEMORY_BASE
+
+    index = {
+        "task_types": {},
+        "profiles": {}
+    }
+
+    # 1. Sweep verified outcomes (skills directory)
+    skills_dir = memory_base / "skills"
+    if skills_dir.exists():
+        for file_path in skills_dir.glob("**/*.md"):
+            frontmatter = parse_frontmatter(file_path)
+            if not frontmatter.get("verified_outcome"):
+                continue
+
+            task_type = frontmatter.get("task_type", "unknown")
+            profile = frontmatter.get("worker_profile", "unknown")
+            timestamp = frontmatter.get("timestamp")
+
+            # Aggregate task_type stats
+            if task_type not in index["task_types"]:
+                index["task_types"][task_type] = {
+                    "total_completed": 0,
+                    "total_failed": 0,
+                    "drift_rate": 0.0,
+                    "last_verified": None,
+                    "last_outcome": None,
+                    "_last_timestamp": None,
+                }
+
+            stats = index["task_types"][task_type]
+            stats["total_completed"] += 1
+
+            if timestamp:
+                if not stats["_last_timestamp"] or timestamp > stats["_last_timestamp"]:
+                    stats["_last_timestamp"] = timestamp
+                    stats["last_verified"] = timestamp
+                    stats["last_outcome"] = "verified"
+
+            # Aggregate profile stats
+            if profile not in index["profiles"]:
+                index["profiles"][profile] = {
+                    "total_completed": 0,
+                    "total_failed": 0,
+                    "drift_rate": 0.0,
+                    "task_types": {}
+                }
+
+            p_stats = index["profiles"][profile]
+            p_stats["total_completed"] += 1
+
+            if task_type not in p_stats["task_types"]:
+                p_stats["task_types"][task_type] = {
+                    "total_completed": 0,
+                    "total_failed": 0,
+                    "drift_rate": 0.0
+                }
+            p_stats["task_types"][task_type]["total_completed"] += 1
+
+    # 2. Sweep drift logs
+    drift_dir = memory_base / "drift_logs"
+    if drift_dir.exists():
+        for file_path in drift_dir.glob("**/*.md"):
+            frontmatter = parse_frontmatter(file_path)
+            if not frontmatter.get("drift_log"):
+                continue
+
+            task_type = frontmatter.get("task_type", "unknown")
+            profile = frontmatter.get("engineer_id", "unknown")
+            timestamp = frontmatter.get("timestamp")
+
+            # Aggregate task_type stats
+            if task_type not in index["task_types"]:
+                index["task_types"][task_type] = {
+                    "total_completed": 0,
+                    "total_failed": 0,
+                    "drift_rate": 0.0,
+                    "last_verified": None,
+                    "last_outcome": None,
+                    "_last_timestamp": None,
+                }
+
+            stats = index["task_types"][task_type]
+            stats["total_failed"] += 1
+
+            if timestamp:
+                if not stats["_last_timestamp"] or timestamp > stats["_last_timestamp"]:
+                    stats["_last_timestamp"] = timestamp
+                    stats["last_verified"] = timestamp
+                    stats["last_outcome"] = "failed"
+
+            # Aggregate profile stats
+            if profile not in index["profiles"]:
+                index["profiles"][profile] = {
+                    "total_completed": 0,
+                    "total_failed": 0,
+                    "drift_rate": 0.0,
+                    "task_types": {}
+                }
+
+            p_stats = index["profiles"][profile]
+            p_stats["total_failed"] += 1
+
+            if task_type not in p_stats["task_types"]:
+                p_stats["task_types"][task_type] = {
+                    "total_completed": 0,
+                    "total_failed": 0,
+                    "drift_rate": 0.0
+                }
+            p_stats["task_types"][task_type]["total_failed"] += 1
+
+    # 3. Calculate drift rates and post-process
+    for stats in index["task_types"].values():
+        stats.pop("_last_timestamp", None)
+        total = stats["total_completed"] + stats["total_failed"]
+        stats["drift_rate"] = stats["total_failed"] / total if total > 0 else 0.0
+
+    for p_stats in index["profiles"].values():
+        total = p_stats["total_completed"] + p_stats["total_failed"]
+        p_stats["drift_rate"] = p_stats["total_failed"] / total if total > 0 else 0.0
+        for t_stats in p_stats["task_types"].values():
+            t_total = t_stats["total_completed"] + t_stats["total_failed"]
+            t_stats["drift_rate"] = t_stats["total_failed"] / t_total if t_total > 0 else 0.0
+
+    # Write the discovery.yaml file
+    index_path = memory_base / "index" / "discovery.yaml"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(index_path, "w", encoding="utf-8") as f:
+        yaml.dump(index, f, default_flow_style=False)
+
+
+def run_sweep_cli():
+    """CLI entrypoint for orcaid-verification-indexer sweep command."""
+    import sys
+    print("Starting OrCAID Orchestrator Memory Sweep Indexer...")
+    try:
+        run_indexer_sweep()
+        print("OrCAID Sweep Indexer completed successfully.")
+    except Exception as e:
+        print(f"Error during sweep indexer: {e}", file=sys.stderr)
+        sys.exit(1)
