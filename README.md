@@ -4,6 +4,8 @@
 
 It runs on Hermes Agent as the execution layer. The verification闭环 and orchestrator-memory are the self-healing guardrails that make delegation truly autonomous rather than fire-and-forget.
 
+For full setup instructions (prerequisites, three-repo stack, orchestrator-memory, cron job, env vars, verification hooks), see [SETUP.md](SETUP.md). This document covers the architecture, patterns, and extension points.
+
 ---
 
 ## Architecture

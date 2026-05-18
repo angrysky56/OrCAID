@@ -15,7 +15,7 @@ from openhands.sdk import LLM
 from openhands.workspace import DockerDevWorkspace, DockerWorkspace
 
 # Load .env from the project root (if present). Real env vars take precedence.
-load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=False)
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 
 from config import WorkflowConfig
@@ -57,6 +57,7 @@ async def run_workflow_inner(
     print("=" * 70)
 
     is_commit0 = isinstance(task_module, Commit0Task)
+    is_self_improve = task == "self_improve"
 
     llm_kwargs = build_llm_kwargs(workflow_config.model)
     llm = LLM(**llm_kwargs)
@@ -463,15 +464,14 @@ async def run_workflow_inner(
                 print("Step 8: Run Subagents First Round")
             print("-" * 60)
 
-            # commit0: enable background exploration; paperbench: no
-            enable_bg_exploration = is_commit0
+            is_self_improve = task == "self_improve"
 
             subagent_results = await run_subagents_parallel(
                 runners,
                 manager=manager,
                 task_module=task_module,
                 output_logger=output_logger,
-                enable_background_exploration=enable_bg_exploration,
+                enable_background_exploration=is_commit0 and not is_self_improve,
                 max_subagents=workflow_config.max_subagents,
             )
 
@@ -646,69 +646,132 @@ async def run_workflow_inner(
                     print(f"[Tarball] Warning: Failed to create tarball: {stderr_msg}")
 
             else:
-                # Paperbench post-parallel flow
-                manager_duration = (
-                    analysis_duration
-                    + delegation_duration
-                    + manager.assign_task_total_time
-                    + manager.review_total_time
-                    + manager.final_review_total_time
-                    + manager.test_total_time
-                )
-                manager_metrics["duration"] = manager_duration
+                test_result_data = {}
+                # self_improve: commit0-style evaluation + syntax check
+                # paperbench: paperbench-style grade.json output
+                if is_self_improve:
+                    manager_duration = (
+                        analysis_duration
+                        + delegation_duration
+                        + manager.assign_task_total_time
+                        + manager.review_total_time
+                        + manager.final_review_total_time
+                        + manager.test_total_time
+                    )
+                    manager_metrics["duration"] = manager_duration
 
-                # Run test (paperbench judge)
-                print("\n" + "-" * 60)
-                print("Step 10: Run Test (PaperBench Judge)")
-                print("-" * 60)
+                    # Run syntax-validation evaluate() (not reproduce.sh judge)
+                    print("\n" + "-" * 60)
+                    print("Step 10: Run Test (Syntax Validation)")
+                    print("-" * 60)
 
-                test_start = datetime.now()
-                test_result = task_module.evaluate(workspace)
-                test_duration = (datetime.now() - test_start).total_seconds()
-                manager.test_total_time = test_duration
-                manager.test_result = test_result
+                    test_start = datetime.now()
+                    test_result = task_module.evaluate(workspace)
+                    test_duration = (datetime.now() - test_start).total_seconds()
+                    test_end = datetime.now()
 
-                test_end = datetime.now()
+                    print("\n[Test] Results:")
+                    print(
+                        f"- Files modified: {len(test_result.get('files_modified', []))}"
+                    )
+                    print(
+                        f"- Syntax errors: {len(test_result.get('syntax_errors', []))}"
+                    )
+                    if test_result.get("py_files_valid"):
+                        print(
+                            f"- Valid Python files: {len(test_result['py_files_valid'])}"
+                        )
 
-                print("\n[Test] Results:")
-                print(
-                    f"- reproduce.sh exists: {test_result['reproduce_script_exists']}"
-                )
-                print(f"- reproduce.sh success: {test_result['reproduce_success']}")
-                print(f"- reproduce duration: {test_result['reproduce_duration']:.1f}s")
-                if test_result.get("judge_score") is not None:
-                    print(f"- Judge score: {test_result['judge_score']:.4f}")
-                    print(f"- Judge nodes: {test_result['judge_num_nodes']}")
+                    # Save self_improve result.json
+                    result_path = Path(workflow_config.output_dir) / "result.json"
+                    result_output = {
+                        "task": task,
+                        "agent_model": workflow_config.model,
+                        "success": test_result["success"],
+                        "files_modified": test_result.get("files_modified", []),
+                        "py_files_valid": test_result.get("py_files_valid", []),
+                        "syntax_errors": test_result.get("syntax_errors", []),
+                        "duration": test_duration,
+                        "tested_at": test_end.isoformat(),
+                    }
 
-                # Save grade.json (same format as original paperbench)
-                grade_path = Path(workflow_config.output_dir) / "grade.json"
-                grade_output = {
-                    "paper_id": task_module.config.paper_id,
-                    "agent_model": workflow_config.model,
-                    "judge_output": {
-                        "judge_type": test_result["judge_type"],
+                    with open(result_path, "w", encoding="utf-8") as f:
+                        json.dump(result_output, f, indent=2, default=str)
+                    print(f"\n[Result] Saved to {result_path}")
+
+                    # total_time not available in self_improve return path
+                    # (early return — runtime_seconds used at final summary instead)
+
+                else:
+                    # Paperbench post-parallel flow
+                    manager_duration = (
+                        analysis_duration
+                        + delegation_duration
+                        + manager.assign_task_total_time
+                        + manager.review_total_time
+                        + manager.final_review_total_time
+                        + manager.test_total_time
+                    )
+                    manager_metrics["duration"] = manager_duration
+
+                    # Run test (paperbench judge)
+                    print("\n" + "-" * 60)
+                    print("Step 10: Run Test (PaperBench Judge)")
+                    print("-" * 60)
+
+                    test_start = datetime.now()
+                    test_result = task_module.evaluate(workspace)
+                    test_duration = (datetime.now() - test_start).total_seconds()
+                    manager.test_total_time = test_duration
+                    manager.test_result = test_result
+                    test_result_data = test_result or {}
+
+                    test_end = datetime.now()
+                    total_time = (datetime.now() - start_time).total_seconds()
+
+                    print("\n[Test] Results:")
+                    print(
+                        f"- reproduce.sh exists: {test_result['reproduce_script_exists']}"
+                    )
+                    print(f"- reproduce.sh success: {test_result['reproduce_success']}")
+                    print(
+                        f"- reproduce duration: {test_result['reproduce_duration']:.1f}s"
+                    )
+                    if test_result.get("judge_score") is not None:
+                        print(f"- Judge score: {test_result['judge_score']:.4f}")
+                        print(f"- Judge nodes: {test_result['judge_num_nodes']}")
+
+                    # Save grade.json (same format as original paperbench)
+                    grade_path = Path(workflow_config.output_dir) / "grade.json"
+                    grade_output = {
+                        "paper_id": task_module.config.paper_id,
+                        "agent_model": workflow_config.model,
+                        "judge_output": {
+                            "judge_type": test_result["judge_type"],
+                            "score": test_result["judge_score"],
+                            "num_leaf_nodes": test_result["judge_num_nodes"],
+                            "num_invalid_leaf_nodes": test_result[
+                                "judge_num_invalid_nodes"
+                            ],
+                            "judge_model": test_result["judge_model"],
+                            "max_depth": test_result["max_depth"],
+                            "graded_task_tree": test_result["graded_task_tree"],
+                        },
+                        "reproduction_metadata": {
+                            "repro_script_exists": test_result[
+                                "reproduce_script_exists"
+                            ],
+                            "repro_success": test_result["reproduce_success"],
+                            "repro_duration": test_result["reproduce_duration"],
+                            "repro_log": test_result["reproduce_log"],
+                        },
                         "score": test_result["judge_score"],
-                        "num_leaf_nodes": test_result["judge_num_nodes"],
-                        "num_invalid_leaf_nodes": test_result[
-                            "judge_num_invalid_nodes"
-                        ],
-                        "judge_model": test_result["judge_model"],
-                        "max_depth": test_result["max_depth"],
-                        "graded_task_tree": test_result["graded_task_tree"],
-                    },
-                    "reproduction_metadata": {
-                        "repro_script_exists": test_result["reproduce_script_exists"],
-                        "repro_success": test_result["reproduce_success"],
-                        "repro_duration": test_result["reproduce_duration"],
-                        "repro_log": test_result["reproduce_log"],
-                    },
-                    "score": test_result["judge_score"],
-                    "tested_at": test_end.isoformat(),
-                    "total_duration": test_duration,
-                }
-                with open(grade_path, "w", encoding="utf-8") as f:
-                    json.dump(grade_output, f, indent=2)
-                print(f"[Grade] Saved to {grade_path}")
+                        "tested_at": test_end.isoformat(),
+                        "total_duration": test_duration,
+                    }
+                    with open(grade_path, "w", encoding="utf-8") as f:
+                        json.dump(grade_output, f, indent=2)
+                    print(f"\n[Grade] Saved to {grade_path}")
 
                 # Recalculate manager_duration with test time
                 manager_duration = (
@@ -720,8 +783,6 @@ async def run_workflow_inner(
                     + manager.test_total_time
                 )
                 manager_metrics["duration"] = manager_duration
-
-                test_result_data = manager.test_result or {}
                 manager_cost_breakdown = {
                     "analysis_cost": manager.analysis_cost,
                     "analysis_tokens": manager.analysis_tokens,

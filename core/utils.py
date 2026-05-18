@@ -1246,9 +1246,11 @@ def build_llm_kwargs(model_name):
     base_url = os.getenv("LLM_BASE_URL")
     if not base_url:
         raise ValueError("Please set LLM_BASE_URL environment variable")
+    # Litellm resolves minimax/MiniMax-M2.7 automatically using the provider prefix.
+    # No custom_llm_provider needed when base_url is also set.
     return {
-        "model": model_name,
-        "api_key": SecretStr(api_key),
+        "model": model_name,  # keep provider prefix so litellm routes correctly
+        "api_key": api_key,
         "base_url": base_url,
     }
 

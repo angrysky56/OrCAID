@@ -68,7 +68,7 @@ Three hook points:
     → Manager.__init__()
     → Manager.run() [via run_single_agent()]
         → scan_and_analyze()       [LLM decomposes task into task graph]
-          → discovery_scan_for_orcaid() called here (not yet wired — see below)
+          → discovery_scan_for_orcaid() injects prior gap context
         → delegation_plan         [task nodes with requirements + weights]
         → delegate_tasks()        [assigns task nodes to engineer_ids]
         → onboard_subagents()     [sends requirements to each subagent]
@@ -131,24 +131,7 @@ SubAgent completes → _verify_and_return() fires
     → pattern automated, you stop doing it manually
 ```
 
-### The Discovery Gap (Not Yet Wired)
-
-`discovery_scan_for_orcaid()` exists but is not yet called from `scan_and_analyze()`. This is the critical missing link:
-
-- Currently: manual correction happens, gets recorded in drift_log, but the NEXT run doesn't automatically get that context injected
-- Once wired: the manager calls discovery_scan_for_orcaid() BEFORE analysis, gets prior gap context, includes it in the delegation prompt
-
-This is literally the pattern: "what you do manually that could be automated in your activities."
-
-To wire it, add to `Manager.scan_and_analyze()`:
-```python
-from orcaid_verification_bridge import discovery_scan_for_orcaid
-gaps = discovery_scan_for_orcaid()
-if gaps:
-    self.conversation.send_message(f"Prior known gaps:\n" + "\n".join([f"- [{g['task_type']}] {g['description']}" for g in gaps]))
-```
-
-### What Makes Someone a "Higher-Level User"
+### The Self-Healing Delegation Loop
 
 A lower-level user: "Do X task with Y subagent."
 A higher-level user: "Build conditions where the system watches for failure patterns and routes them back with correction — without being told."
@@ -209,7 +192,6 @@ To add a new subagent type (beyond engineer_1-4):
 1. Define profile in `config.py` → `SUBAGENT_PROFILES` dict
 2. Add Hermes profile mapping in `ORCAID_TO_HERMES_PROFILE` in `orcaid_verification_bridge.py`
 3. Register in `SubAgentResult` dataclass if new result fields needed
-4. Create a verification checklist in `~/.hermes/skills/gsd/orcaid-verification-bridge/references/`
 
 ---
 
@@ -268,9 +250,14 @@ OrCAID/
 
 ## Extending the Bridge
 
-Add new checklist types in `~/.hermes/skills/gsd/orcaid-verification-bridge/references/`:
+Add new task types in `orcaid_verification_bridge.py` → `TASK_MODULE_TO_CHECKLIST`:
 
-- `checklist_code_review.yaml` — for code implementation
-- `checklist_research_reproduction.yaml` — for paper reproduction
+```python
+TASK_MODULE_TO_CHECKLIST = {
+    'code_review': 'checklist_code_review',
+    'research_reproduction': 'checklist_research_reproduction',
+    # add new task types here
+}
+```
 
-Wire new checklists in `verify_subagent_completion()` by matching `subagent_result.task_category` or `subagent_result.Requirements` against checklist `metadata.task_type`.
+Each checklist is defined inline in the bridge module (see `_CHECKLIST_CODE_REVIEW` and `_CHECKLIST_RESEARCH_REPRODUCTION`). Add a new one and wire it into `TASK_MODULE_TO_CHECKLIST`.

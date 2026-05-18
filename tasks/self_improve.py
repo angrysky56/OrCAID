@@ -9,6 +9,7 @@ import ast
 import os
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .base import TaskModule
@@ -40,12 +41,12 @@ class SelfImproveTask(TaskModule):
         return "python:3.12-slim"
 
     def get_work_dir(self):
-        return "/workspace/orcaid_repo"
+        return str(Path.home() / "orcaid_workspace")
 
     def get_workspace_config(self):
         return {
             "base_image": self.get_docker_image(),
-            "target": "source",
+            "target": "source-minimal",
         }
 
     def load_task_data(self):
@@ -162,6 +163,8 @@ class SelfImproveTask(TaskModule):
             "workspace_dir_name": work_dir.split("/")[-1],
             "repo_path": work_dir,
             "task_description": self.config.task_description,
+            "test_cmd": "python3 -c 'import ast; ast.parse(open(f).read())'",
+            "test_dir": work_dir,
         }
 
     # ---- Manager integration methods ----
