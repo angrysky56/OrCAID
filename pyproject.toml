@@ -41,6 +41,7 @@ dev = [
 
 [project.scripts]
 orcaid = "orcaid.cli:main"
+orcaid-verification-indexer = "orcaid.bridge:run_sweep_cli"
 
 [tool.setuptools.packages.find]
 include = ["orcaid*"]
