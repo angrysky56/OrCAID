@@ -12,6 +12,7 @@ Wires:
   → drift: re-invoke with correction context | pass: OrCAID continues
 """
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,9 +20,45 @@ from typing import Optional
 
 import yaml
 
-# Default paths
-ORCHESTRATOR_MEMORY_BASE = Path.home() / ".hermes" / "orchestrator-memory"
-BRIDGE_STORAGE = Path.home() / ".hermes" / "orcaid-verification-bridge"
+# ---------------------------------------------------------------------------
+# Default paths — configurable via environment variables
+#
+# ORCHESTRATOR_MEMORY_BASE: where verified outcomes, drift logs, and the
+#   discovery index live.  Set via env var to relocate; defaults to
+#   ~/.orcaid/orchestrator-memory.
+#
+# BRIDGE_STORAGE: auxiliary storage for the verification bridge itself
+#   (e.g. cached checklists).  Defaults to ~/.orcaid/bridge.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_ORCAID_HOME = Path.home() / ".orcaid"
+
+
+def get_memory_base() -> Path:
+    """Return the orchestrator-memory root, resolved once from env."""
+    return Path(
+        os.environ.get(
+            "ORCHESTRATOR_MEMORY_BASE",
+            str(_DEFAULT_ORCAID_HOME / "orchestrator-memory"),
+        )
+    )
+
+
+def get_bridge_storage() -> Path:
+    """Return the bridge storage root, resolved once from env."""
+    return Path(
+        os.environ.get(
+            "ORCAID_BRIDGE_STORAGE",
+            str(_DEFAULT_ORCAID_HOME / "bridge"),
+        )
+    )
+
+
+# Module-level constants kept for backward compatibility — callers that
+# imported ORCHESTRATOR_MEMORY_BASE directly will still work, but the
+# canonical way is to call get_memory_base().
+ORCHESTRATOR_MEMORY_BASE = get_memory_base()
+BRIDGE_STORAGE = get_bridge_storage()
 
 ORCAID_TO_HERMES_PROFILE = {
     "engineer_1": "coder",
@@ -706,7 +743,7 @@ def escalate_to_human(
     Flag a subagent result for human review.
     Writes an escalation marker to orchestrator-memory and logs to OrCAID output.
     """
-    memory_base = ORCHESTRATOR_MEMORY_BASE
+    memory_base = get_memory_base()
     escalation_dir = memory_base / "escalations"
     escalation_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1111,12 +1148,20 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
 
 
 def run_sweep_cli():
-    """CLI entrypoint for orcaid-verification-indexer sweep command."""
+    """CLI entrypoint for orcaid-verification-indexer sweep command.
+
+    Resolves the memory base path from ``ORCHESTRATOR_MEMORY_BASE`` env var
+    or falls back to ``~/.orcaid/orchestrator-memory``.
+    """
     import sys
-    print("Starting OrCAID Orchestrator Memory Sweep Indexer...")
+
+    memory_base = get_memory_base()
+    print(f"Starting OrCAID Orchestrator Memory Sweep Indexer...")
+    print(f"  Memory base: {memory_base}")
     try:
-        run_indexer_sweep()
+        run_indexer_sweep(memory_base=memory_base)
         print("OrCAID Sweep Indexer completed successfully.")
     except Exception as e:
         print(f"Error during sweep indexer: {e}", file=sys.stderr)
         sys.exit(1)
+

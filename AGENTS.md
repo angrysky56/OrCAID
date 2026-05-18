@@ -146,7 +146,7 @@ OrCAID + verification闭环 + orchestrator-memory = the technical implementation
 
 ## Orchestrator Memory (Persistent State)
 
-Located at `~/.hermes/orchestrator-memory/`:
+Located at `~/.orcaid/orchestrator-memory/` (override with `ORCHESTRATOR_MEMORY_BASE` env var):
 
 ```
 orchestrator-memory/

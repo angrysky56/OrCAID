@@ -1,6 +1,5 @@
 import os
 from datetime import datetime
-from pathlib import Path
 
 from orcaid.core.utils import (
     count_llm_iterations,
@@ -181,6 +180,7 @@ class ReviewMixin:
         try:
             from orcaid.bridge import (
                 escalate_to_human,
+                get_memory_base,
                 orcaid_reinvoke_subagent,
                 verify_subagent_completion,
             )
@@ -201,12 +201,7 @@ class ReviewMixin:
                 )
                 return review_result
 
-        orchestrator_memory_base = Path(
-            os.environ.get(
-                "ORCHESTRATOR_MEMORY_BASE",
-                str(Path.home() / ".hermes" / "orchestrator-memory"),
-            )
-        )
+        orchestrator_memory_base = get_memory_base()
 
         try:
             verification = verify_subagent_completion(
@@ -434,12 +429,7 @@ class ReviewMixin:
                 manager_review_results=[{"merged": r.merged} for r in subagent_results],
                 task_type=task_type,
             )
-            orchestrator_memory_base = Path(
-                os.environ.get(
-                    "ORCHESTRATOR_MEMORY_BASE",
-                    str(Path.home() / ".hermes" / "orchestrator-memory"),
-                )
-            )
+            orchestrator_memory_base = get_memory_base()
             write_compound_skill(synthesis, memory_base=orchestrator_memory_base)
             self.log("[VerificationBridge] Successfully wrote compound synthesis skill")
         except Exception as e:

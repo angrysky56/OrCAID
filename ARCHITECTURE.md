@@ -50,7 +50,7 @@ loop at every handoff.
        ▼
 ┌──────────────────────────────────────────────────────┐
 │           Orchestrator Memory                        │
-│  ~/.hermes/orchestrator-memory/                      │
+│  ~/.orcaid/orchestrator-memory/                      │
 │    ├── verified/       pass records                  │
 │    ├── drift_logs/     failure + correction context   │
 │    ├── escalations/    human review queue             │

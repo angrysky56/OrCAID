@@ -81,7 +81,7 @@ uv run orcaid --task commit0 --model <model> --single_agent
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                   orchestrator-memory                       │
-│  ~/.hermes/orchestrator-memory/                             │
+│  ~/.orcaid/orchestrator-memory/                             │
 │                                                             │
 │  skills/         ← verified outcome skill files             │
 │  drift_logs/     ← failed runs with correction context      │
@@ -99,7 +99,7 @@ uv run orcaid --task commit0 --model <model> --single_agent
 OrCAID writes every subagent result to disk after scoring. This is the persistent state layer that enables self-healing across runs.
 
 ```bash
-~/.hermes/orchestrator-memory/
+~/.orcaid/orchestrator-memory/
 ├── skills/                    # Verified outcome skill files
 │   └── {task_type}/
 │       └── {task_id}__{timestamp}.md
@@ -115,6 +115,10 @@ The directory is created automatically on first run. Override the base path:
 ```bash
 export ORCHESTRATOR_MEMORY_BASE=/path/to/custom/location
 ```
+
+> **Migrating from `~/.hermes/`:** If you have existing data at `~/.hermes/orchestrator-memory`,
+> either move it to `~/.orcaid/orchestrator-memory` or set
+> `ORCHESTRATOR_MEMORY_BASE=~/.hermes/orchestrator-memory` in your `.env`.
 
 ---
 
@@ -225,7 +229,7 @@ Available tasks: `commit0`, `paperbench`, `self_improve`
 |---|---|---|---|
 | `LLM_BASE_URL` | Yes | — | LLM API endpoint |
 | `LLM_API_KEY` | Yes | — | LLM API key |
-| `ORCHESTRATOR_MEMORY_BASE` | No | `~/.hermes/orchestrator-memory` | Where verified outcomes and drift logs are written |
+| `ORCHESTRATOR_MEMORY_BASE` | No | `~/.orcaid/orchestrator-memory` | Where verified outcomes and drift logs are written |
 
 ---
 

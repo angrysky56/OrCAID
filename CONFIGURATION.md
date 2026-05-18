@@ -60,7 +60,8 @@ Falls back to the manager model if not set.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `ORCHESTRATOR_MEMORY_BASE` | No | `~/.hermes/orchestrator-memory` | Root directory for verification outcomes, drift logs, and discovery index |
+| `ORCHESTRATOR_MEMORY_BASE` | No | `~/.orcaid/orchestrator-memory` | Root directory for verification outcomes, drift logs, and discovery index |
+| `ORCAID_BRIDGE_STORAGE` | No | `~/.orcaid/bridge` | Auxiliary storage for the verification bridge (cached checklists, etc.) |
 
 ### Misc
 
@@ -139,7 +140,7 @@ the thinking/reasoning split feature.
 The verification bridge persists state to the orchestrator memory directory:
 
 ```
-~/.hermes/orchestrator-memory/
+~/.orcaid/orchestrator-memory/
 ├── verified/        # YAML files for each verified subagent outcome
 ├── drift_logs/      # Markdown reports for failed verifications
 ├── escalations/     # Items requiring human review
@@ -148,6 +149,10 @@ The verification bridge persists state to the orchestrator memory directory:
 ```
 
 Override with `ORCHESTRATOR_MEMORY_BASE` environment variable.
+
+> **Migrating from `~/.hermes/`:** If you previously used the `~/.hermes/orchestrator-memory`
+> path, set `ORCHESTRATOR_MEMORY_BASE=~/.hermes/orchestrator-memory` in your `.env` to
+> preserve your existing data.
 
 ---
 
