@@ -41,7 +41,7 @@ OrCAID requires `LLM_BASE_URL` and `LLM_API_KEY`. Both are read from the environ
 
 ```bash
 # Multi-agent (default — Manager + up to 4 engineer subagents):
-uv run python run_infer.py \
+uv run orcaid \
   --task commit0 \
   --model <your-model> \
   --subagent_model <subagent-model> \
@@ -51,7 +51,7 @@ uv run python run_infer.py \
   --max_rounds_chat 2
 
 # Single-agent baseline (for comparison):
-uv run python run_infer.py --task commit0 --model <model> --single_agent
+uv run orcaid --task commit0 --model <model> --single_agent
 ```
 
 ---
@@ -191,7 +191,7 @@ The [meta-harness](https://github.com/your-org/meta-harness) repo evaluates mode
 
 ```
 meta-harness --domain orcaid  → evaluates OrCAID's delegation behavior
-OrCAID run_infer.py            → runs OrCAID as an execution engine
+uv run orcaid                 → runs OrCAID as an execution engine
 ```
 
 If you want to evolve OrCAID's own prompting or manager behavior:
@@ -209,10 +209,10 @@ This is optional. OrCAID runs perfectly well without meta-harness.
 
 | Command | What it does |
 |---|---|
-| `uv run python run_infer.py --task commit0 ...` | Full multi-agent run (Manager + engineers) |
-| `uv run python run_infer.py --task commit0 --single_agent` | Single-agent baseline |
-| `uv run python run_infer.py --task self_improve ...` | Self-improvement task (OrCAID modifies itself) |
-| `uv run python run_infer.py --task paperbench ...` | Paper reproduction task |
+| `uv run orcaid --task commit0 ...` | Full multi-agent run (Manager + engineers) |
+| `uv run orcaid --task commit0 --single_agent` | Single-agent baseline |
+| `uv run orcaid --task self_improve ...` | Self-improvement task (OrCAID modifies itself) |
+| `uv run orcaid --task paperbench ...` | Paper reproduction task |
 | Cron job (every 6h) | Sweeps orchestrator-memory → updates discovery.yaml |
 
 Available tasks: `commit0`, `paperbench`, `self_improve`

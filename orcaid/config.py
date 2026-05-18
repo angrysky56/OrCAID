@@ -5,6 +5,7 @@ from typing import Optional
 @dataclass
 class WorkflowConfig:
     """Shared workflow configuration across all tasks."""
+
     model: Optional[str] = None
     subagent_model: Optional[str] = None
     manager_max_iterations: int = 50

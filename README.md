@@ -43,7 +43,7 @@ collect_and_merge() ──→ _verify_and_return()
 | `core/subagent.py`              | Engineer subagent spawner — one worktree per subagent     |
 | `orcaid_verification_bridge.py` | The self-healing layer — verification + drift correction  |
 | `config.py`                     | SubAgentResult dataclass (26 fields), SubAgent config     |
-| `run_infer.py`                  | Entry point — sets up LLM, workspace, task, runs workflow |
+| `orcaid` CLI                    | Entry point — sets up LLM, workspace, task, runs workflow |
 
 ---
 
@@ -141,7 +141,7 @@ Subagents investigate different bug clusters. Verification: reproduction script 
 
 ```bash
 cd /home/ty/Repositories/ai_workspace/OrCAID
-uv run python run_infer.py \
+uv run orcaid \
   --task commit0 \
   --model <your-model> \
   --subagent_model <subagent-model> \
@@ -154,7 +154,7 @@ uv run python run_infer.py \
 ### Single-agent baseline (for comparison):
 
 ```bash
-uv run python run_infer.py --task commit0 --model <model> --single_agent
+uv run orcaid --task commit0 --model <model> --single_agent
 ```
 
 ---

@@ -28,8 +28,14 @@ from pydantic import SecretStr
 from rich.console import Console
 from rich.panel import Panel
 
-from config import AnalysisResult, DelegationPlan, PaperInfo, SubAgentTask, TaskNode
-from tasks import (
+from orcaid.config import (
+    AnalysisResult,
+    DelegationPlan,
+    PaperInfo,
+    SubAgentTask,
+    TaskNode,
+)
+from orcaid.tasks import (
     Commit0Config,
     Commit0Task,
     PaperbenchConfig,
@@ -1242,14 +1248,18 @@ def save_all_costs(
 def build_llm_kwargs(model_name):
     api_key = os.getenv("LLM_API_KEY")
     if not api_key:
-        raise ValueError("Please set LLM_API_KEY environment variable")
+        raise ValueError("Please set LLM_API_KEY environment variable. If using a proxy without auth, set it to a dummy value like 'sk-dummy'.")
     base_url = os.getenv("LLM_BASE_URL")
     if not base_url:
         raise ValueError("Please set LLM_BASE_URL environment variable")
-    # Litellm resolves minimax/MiniMax-M2.7 automatically using the provider prefix.
-    # No custom_llm_provider needed when base_url is also set.
+        
+    # Force OpenAI compatible routing for MiniMax to avoid legacy litellm minimax 
+    # provider logic which expects Group ID and uses deprecated API structures.
+    if model_name.startswith("minimax/") and base_url:
+        model_name = "openai/" + model_name.split("/", 1)[1]
+
     return {
-        "model": model_name,  # keep provider prefix so litellm routes correctly
+        "model": model_name,
         "api_key": api_key,
         "base_url": base_url,
     }

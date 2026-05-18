@@ -1,10 +1,12 @@
 """
 python -m judge.judge_runner
 """
+
 import asyncio
 import json
 import os
 from pathlib import Path
+
 import fire
 from litellm import cost_per_token
 from paperbench.judge.create_judge import create_judge, handle_judge_kwargs
@@ -15,7 +17,6 @@ from paperbench.rubric.tasks import TaskNode
 from preparedness_turn_completer.oai_completions_turn_completer import (
     OpenAICompletionsTurnCompleter,
 )
-
 
 DEFAULT_DATA_DIR = str(Path(__file__).resolve().parents[1] / "data" / "paperbench")
 
@@ -61,20 +62,30 @@ def run(
                 "Code Development"
             ).set_sub_tasks([])
 
-        judge_kwargs = handle_judge_kwargs(judge_type, code_dev, paper, completer_config)
+        judge_kwargs = handle_judge_kwargs(
+            judge_type, code_dev, paper, completer_config
+        )
 
         # Pass structured completer configs so SimpleJudge doesn't fall back
         # to the hardcoded neulab/gpt-4o-2024-08-06 model.
         # Use reasoning_effort="low" and high max_tokens because the parsing
         # task is trivial and reasoning models waste output tokens on thinking.
         if judge_type == "simple" and completer_config is not None:
-            judge_kwargs["float_completer_config"] = OpenAICompletionsTurnCompleter.Config(
-                model=judge_model, response_format=ParsedJudgeResponseFloat,
-                reasoning_effort="low", max_tokens=4096,
+            judge_kwargs["float_completer_config"] = (
+                OpenAICompletionsTurnCompleter.Config(
+                    model=judge_model,
+                    response_format=ParsedJudgeResponseFloat,
+                    reasoning_effort="low",
+                    max_tokens=4096,
+                )
             )
-            judge_kwargs["int_completer_config"] = OpenAICompletionsTurnCompleter.Config(
-                model=judge_model, response_format=ParsedJudgeResponseInt,
-                reasoning_effort="low", max_tokens=4096,
+            judge_kwargs["int_completer_config"] = (
+                OpenAICompletionsTurnCompleter.Config(
+                    model=judge_model,
+                    response_format=ParsedJudgeResponseInt,
+                    reasoning_effort="low",
+                    max_tokens=4096,
+                )
             )
 
         judge = create_judge(
@@ -83,7 +94,11 @@ def run(
             paper_path=paper.paper_pdf,
             rubric=task_tree,
             addendum=paper.addendum.read_text() if paper.addendum else None,
-            judge_addendum=paper.judge_addendum.read_text() if paper.judge_addendum.exists() else None,
+            judge_addendum=(
+                paper.judge_addendum.read_text()
+                if paper.judge_addendum.exists()
+                else None
+            ),
             submission_dir=submission_path,
             paper_md=paper.paper_md,
             log_path=out_dir,
@@ -98,7 +113,9 @@ def run(
     for model, usage in token_usage.to_dict().items():
         try:
             prompt_cost, completion_cost = cost_per_token(
-                model=model, prompt_tokens=usage["in"], completion_tokens=usage["out"],
+                model=model,
+                prompt_tokens=usage["in"],
+                completion_tokens=usage["out"],
             )
             total_cost += prompt_cost + completion_cost
         except Exception:

@@ -177,7 +177,7 @@ class SelfImproveTask(TaskModule):
         }
 
     def build_subagent(self, engineer_id, primary_task, all_tasks):
-        from config import SubAgent
+        from orcaid.config import SubAgent
 
         all_files = []
         all_instructions = []
@@ -256,7 +256,7 @@ class SelfImproveTask(TaskModule):
     # ---- SubAgent runner integration methods ----
 
     def create_subagent_result(self, subagent):
-        from config import SubAgentResult
+        from orcaid.config import SubAgentResult
 
         return SubAgentResult(
             engineer_id=subagent.engineer_id,

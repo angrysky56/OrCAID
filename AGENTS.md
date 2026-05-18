@@ -64,7 +64,7 @@ Three hook points:
 ## Delegation State Machine
 
 ```
-[User/Hermes] → run_infer.py
+[User/Hermes] → orcaid CLI
     → Manager.__init__()
     → Manager.run() [via run_single_agent()]
         → scan_and_analyze()       [LLM decomposes task into task graph]
@@ -240,7 +240,7 @@ OrCAID/
 │   └── subagent.py       # SubAgentRunner + spawn logic
 ├── orcaid_verification_bridge.py  # Self-healing hook implementation
 ├── config.py             # SubAgentResult dataclass (26 fields)
-├── run_infer.py          # Entry point
+├── orcaid/cli.py         # Entry point
 └── tasks/
     ├── commit0.py        # Implement functions task
     └── paperbench.py     # Reproduce papers task

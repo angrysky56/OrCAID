@@ -4,11 +4,13 @@ Handles task assignment decisions.
 """
 
 from datetime import datetime
+import yaml
 
 from openhands.sdk.conversation.exceptions import ConversationRunError
 
-from config import SubAgent
-from core.utils import (
+from orcaid.bridge import ORCHESTRATOR_MEMORY_BASE
+from orcaid.config import SubAgent
+from orcaid.core.utils import (
     count_llm_iterations,
     extract_conversation_metrics,
     extract_json_from_events,
@@ -89,6 +91,40 @@ class AssignmentMixin:
         else:
             finished_agents_summary = "  none"
 
+        # Load historical performance context to guide assignment decisions
+        history_summary_lines = []
+        index_path = ORCHESTRATOR_MEMORY_BASE / "index" / "discovery.yaml"
+        if index_path.exists():
+            try:
+                with open(index_path, "r", encoding="utf-8") as f:
+                    index_data = yaml.safe_load(f) or {}
+
+                # Format task type stats
+                task_types = index_data.get("task_types", {})
+                if task_types:
+                    history_summary_lines.append("Historical Task Type Performance & Drift:")
+                    for t_type, stats in task_types.items():
+                        history_summary_lines.append(
+                            f"  - {t_type}: completed={stats.get('total_completed', 0)}, "
+                            f"failed={stats.get('total_failed', 0)}, "
+                            f"drift_rate={stats.get('drift_rate', 0.0):.1%}"
+                        )
+
+                # Format profile stats
+                profiles = index_data.get("profiles", {})
+                if profiles:
+                    history_summary_lines.append("Historical Subagent Profile Performance:")
+                    for p_name, stats in profiles.items():
+                        history_summary_lines.append(
+                            f"  - {p_name}: completed={stats.get('total_completed', 0)}, "
+                            f"failed={stats.get('total_failed', 0)}, "
+                            f"drift_rate={stats.get('drift_rate', 0.0):.1%}"
+                        )
+            except Exception:
+                pass
+
+        history_context = "\n".join(history_summary_lines) if history_summary_lines else "  No historical performance data available."
+
         prompt = self.prompts.get("assign_task", "").format(
             engineer_id=engineer_id,
             task_status=task_status,
@@ -100,6 +136,8 @@ class AssignmentMixin:
             inactive_agents_summary=inactive_agents_summary,
             finished_agents_summary=finished_agents_summary,
         )
+
+        prompt += f"\n\n### Historical Subagent Drift and Performance Context\n{history_context}\n"
 
         # Track time and cost for this assign_task call
         assign_start_time = datetime.now()

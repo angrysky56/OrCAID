@@ -1,6 +1,7 @@
 """
 python -m tasks.commit0
 """
+
 import json
 from dataclasses import dataclass
 from typing import Optional
@@ -138,12 +139,8 @@ class Commit0Task(TaskModule):
 
         # Determine test command from task data
         test_info = self.task_data.get("test", {})
-        test_cmd = test_info.get(
-            "test_cmd", self.task_data.get("test_cmd", "pytest")
-        )
-        test_dir = test_info.get(
-            "test_dir", self.task_data.get("test_dir", "tests/")
-        )
+        test_cmd = test_info.get("test_cmd", self.task_data.get("test_cmd", "pytest"))
+        test_dir = test_info.get("test_dir", self.task_data.get("test_dir", "tests/"))
         if test_cmd.strip().startswith("pytest"):
             test_cmd = "python -m " + test_cmd.strip()
 
@@ -179,7 +176,9 @@ class Commit0Task(TaskModule):
         except (json.JSONDecodeError, Exception) as e:
             print(f"[Commit0] Warning: could not parse report.json: {e}")
 
-        print(f"[Commit0] Pytest results: {passed} passed, {failed} failed, {error} error")
+        print(
+            f"[Commit0] Pytest results: {passed} passed, {failed} failed, {error} error"
+        )
 
         return {
             "exit_code": str(output_result.exit_code),
@@ -194,8 +193,14 @@ class Commit0Task(TaskModule):
         work_dir = self.get_work_dir()
         workspace_dir_name = work_dir.split("/")[-1]
         test_info = self.task_data.get("test", {}) if self.task_data else {}
-        test_cmd = test_info.get("test_cmd", self.task_data.get("test_cmd", "pytest") if self.task_data else "pytest")
-        test_dir = test_info.get("test_dir", self.task_data.get("test_dir", "tests/") if self.task_data else "tests/")
+        test_cmd = test_info.get(
+            "test_cmd",
+            self.task_data.get("test_cmd", "pytest") if self.task_data else "pytest",
+        )
+        test_dir = test_info.get(
+            "test_dir",
+            self.task_data.get("test_dir", "tests/") if self.task_data else "tests/",
+        )
         if test_cmd.strip().startswith("pytest"):
             test_cmd = "python -m " + test_cmd.strip()
         return {
@@ -216,7 +221,8 @@ class Commit0Task(TaskModule):
         }
 
     def build_subagent(self, engineer_id, primary_task, all_tasks):
-        from config import SubAgent
+        from orcaid.config import SubAgent
+
         all_files = []
         all_functions = []
         all_instructions = []
@@ -225,7 +231,9 @@ class Commit0Task(TaskModule):
             all_functions.extend(t.functions_to_implement)
             all_instructions.append(f"File: {t.file_path}\n{t.instruction}")
         combined_instruction = "\n\n---\n\n".join(all_instructions)
-        combined_file_path = ", ".join(all_files) if len(all_files) > 1 else all_files[0]
+        combined_file_path = (
+            ", ".join(all_files) if len(all_files) > 1 else all_files[0]
+        )
         subagent = SubAgent(
             engineer_id=engineer_id,
             task_id=primary_task.task_id,
@@ -234,7 +242,11 @@ class Commit0Task(TaskModule):
             instruction=combined_instruction,
             estimated_complexity=primary_task.estimated_complexity,
         )
-        combine_log = f"  (Combined {len(all_tasks)} tasks: {all_files})" if len(all_tasks) > 1 else None
+        combine_log = (
+            f"  (Combined {len(all_tasks)} tasks: {all_files})"
+            if len(all_tasks) > 1
+            else None
+        )
         return subagent, combine_log
 
     def get_worktree_name(self, engineer_id):
@@ -242,7 +254,7 @@ class Commit0Task(TaskModule):
 
     def get_subagent_log_lines(self, subagent):
         lines = [f"      Task: {subagent.file_path}"]
-        funcs_str = ', '.join(subagent.functions_to_implement[:3])
+        funcs_str = ", ".join(subagent.functions_to_implement[:3])
         if len(subagent.functions_to_implement) > 3:
             funcs_str += f"... (+{len(subagent.functions_to_implement)-3})"
         lines.append(f"      Functions: {funcs_str}")
@@ -300,15 +312,21 @@ class Commit0Task(TaskModule):
             subagent.worktree_path = f"/workspace/{worktree_name}"
             subagent.base_commit = current_head
 
-            update_cmd = f"cd {subagent.worktree_path} && git reset --hard {current_head}"
+            update_cmd = (
+                f"cd {subagent.worktree_path} && git reset --hard {current_head}"
+            )
             update_result = workspace.execute_command(update_cmd, timeout=60)
 
             if update_result.exit_code != 0:
-                log_fn(f"Failed to update worktree for {subagent.engineer_id}: {update_result.stderr}")
+                log_fn(
+                    f"Failed to update worktree for {subagent.engineer_id}: {update_result.stderr}"
+                )
                 subagent.status = "failed"
             else:
                 subagent.status = "ready"
-                log_fn(f"Worktree for {subagent.engineer_id} updated to {current_head[:8]}")
+                log_fn(
+                    f"Worktree for {subagent.engineer_id} updated to {current_head[:8]}"
+                )
 
             if progress_summary:
                 subagent.instruction = f"{progress_summary}\n\n{subagent.instruction}"
@@ -319,7 +337,9 @@ class Commit0Task(TaskModule):
         header = "Single Agent Mode - Implementing all functions"
         format_args = self.get_prompt_format_args(config)
         format_args["repo_path"] = self.get_work_dir()
-        user_instruction = prompts.get("single_agent_instruction", "").format(**format_args)
+        user_instruction = prompts.get("single_agent_instruction", "").format(
+            **format_args
+        )
         log_content = {
             "repo_name": self.config.repo_name,
             "repo_path": self.get_work_dir(),
@@ -339,7 +359,8 @@ class Commit0Task(TaskModule):
     # ---- SubAgent runner integration methods ----
 
     def create_subagent_result(self, subagent):
-        from config import SubAgentResult
+        from orcaid.config import SubAgentResult
+
         return SubAgentResult(
             engineer_id=subagent.engineer_id,
             task_id=subagent.task_id,
@@ -404,7 +425,7 @@ class Commit0Task(TaskModule):
 
     def get_new_task_print_lines(self, subagent):
         lines = [f"- New file: {subagent.file_path}"]
-        funcs = ', '.join(subagent.functions_to_implement[:3])
+        funcs = ", ".join(subagent.functions_to_implement[:3])
         if len(subagent.functions_to_implement) > 3:
             funcs += f"... (+{len(subagent.functions_to_implement)-3})"
         lines.append(f"- Functions: {funcs}")
@@ -427,6 +448,7 @@ class Commit0Task(TaskModule):
 
     def get_log_agent_response_kwargs(self, result):
         from datetime import datetime
+
         return {
             "engineer_id": result.engineer_id,
             "task_id": result.task_id,
@@ -442,12 +464,18 @@ class Commit0Task(TaskModule):
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
             "total_tokens": result.total_tokens,
-            "start_time": datetime.fromisoformat(result.start_time) if result.start_time else None,
-            "end_time": datetime.fromisoformat(result.end_time) if result.end_time else None,
+            "start_time": (
+                datetime.fromisoformat(result.start_time) if result.start_time else None
+            ),
+            "end_time": (
+                datetime.fromisoformat(result.end_time) if result.end_time else None
+            ),
             "round_num": result.round_num,
         }
 
-    def get_conflict_instruction_args(self, subagent, conflict_files, workspace, repo_dir):
+    def get_conflict_instruction_args(
+        self, subagent, conflict_files, workspace, repo_dir
+    ):
         conflict_file_list = "\n".join(f"  - {f}" for f in conflict_files)
         return {"conflict_file_list": conflict_file_list}
 
@@ -465,7 +493,9 @@ class Commit0Task(TaskModule):
         committed_count = len([r for r in results if r.success])
         recovered_count = len([r for r in results if r.merged and not r.success])
         failed_count = len([r for r in results if not r.merged])
-        lines.append(f"Merged: {merged_count} (committed: {committed_count}, recovered: {recovered_count})")
+        lines.append(
+            f"Merged: {merged_count} (committed: {committed_count}, recovered: {recovered_count})"
+        )
         lines.append(f"Failed: {failed_count}")
 
         agent_results = {}
@@ -521,7 +551,9 @@ if __name__ == "__main__":
         expected_image = f"docker.io/wentingzhao/{repo}:v0"
         assert t.get_docker_image() == expected_image, f"{repo}: {t.get_docker_image()}"
         assert t.get_work_dir() == f"/workspace/{repo}_repo"
-        print(f"  {repo:15s} -> image={t.get_docker_image()}, work_dir={t.get_work_dir()}")
+        print(
+            f"  {repo:15s} -> image={t.get_docker_image()}, work_dir={t.get_work_dir()}"
+        )
 
     # 5. task_data should be None before load
     assert task.task_data is None

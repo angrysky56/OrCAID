@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from core.utils import (
+from orcaid.core.utils import (
     count_llm_iterations,
     extract_conversation_metrics,
 )
@@ -178,22 +178,28 @@ class ReviewMixin:
         Returns:
             dict: The (potentially modified) review result.
         """
-        import sys
-
-        # Dynamically import bridge to allow OrCAID to run without it
-        sys.path.insert(0, os.path.dirname(__file__))
         try:
-            from orcaid_verification_bridge import (
+            from orcaid.bridge import (
                 escalate_to_human,
                 orcaid_reinvoke_subagent,
                 verify_subagent_completion,
             )
         except ImportError:
-            # Bridge not installed — skip verification, return original review_result
-            self.log(
-                "[VerificationBridge] orcaid_verification_bridge not found — skipping"
-            )
-            return review_result
+            try:
+                import sys
+
+                sys.path.insert(0, os.path.dirname(__file__))
+                from orcaid_verification_bridge import (
+                    escalate_to_human,
+                    orcaid_reinvoke_subagent,
+                    verify_subagent_completion,
+                )
+            except ImportError:
+                # Bridge not installed — skip verification, return original review_result
+                self.log(
+                    "[VerificationBridge] Verification bridge not found — skipping"
+                )
+                return review_result
 
         orchestrator_memory_base = Path(
             os.environ.get(
@@ -413,6 +419,32 @@ class ReviewMixin:
         )
 
         self.save_events("final_review_all", event_count_before)
+
+        # Trigger Synthesis Hook
+        try:
+            from orcaid.bridge import synthesize_orcaid_outcome, write_compound_skill
+
+            task_type = (
+                "code_review"
+                if "Commit" in self.task.__class__.__name__
+                else "research_reproduction"
+            )
+            synthesis = synthesize_orcaid_outcome(
+                subagent_results=subagent_results,
+                manager_review_results=[{"merged": r.merged} for r in subagent_results],
+                task_type=task_type,
+            )
+            orchestrator_memory_base = Path(
+                os.environ.get(
+                    "ORCHESTRATOR_MEMORY_BASE",
+                    str(Path.home() / ".hermes" / "orchestrator-memory"),
+                )
+            )
+            write_compound_skill(synthesis, memory_base=orchestrator_memory_base)
+            self.log("[VerificationBridge] Successfully wrote compound synthesis skill")
+        except Exception as e:
+            self.log(f"[VerificationBridge] Synthesis skipped/failed: {e}")
+
         return {
             "duration": final_review_duration,
             "cost": self.final_review_cost,

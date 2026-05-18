@@ -203,7 +203,9 @@ class TaskModule(ABC):
         ...
 
     @abstractmethod
-    def get_conflict_instruction_args(self, subagent, conflict_files, workspace, repo_dir):
+    def get_conflict_instruction_args(
+        self, subagent, conflict_files, workspace, repo_dir
+    ):
         """Return format args dict for the conflict_resolution yaml template."""
         ...
 

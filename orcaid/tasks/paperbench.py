@@ -1,6 +1,7 @@
 """
 python -m tasks.paperbench
 """
+
 import json
 import os
 import shutil
@@ -115,7 +116,9 @@ class PaperbenchTask(TaskModule):
 
         # Verify
         verify = workspace.execute_command("ls -la /workspace/paper/", timeout=30)
-        print(f"[PaperBench] Paper directory: {verify.stdout[:200] if verify.stdout else 'empty'}")
+        print(
+            f"[PaperBench] Paper directory: {verify.stdout[:200] if verify.stdout else 'empty'}"
+        )
         print("[PaperBench] Workspace setup complete")
 
     def upload_paper_tarball(self, workspace):
@@ -146,7 +149,10 @@ class PaperbenchTask(TaskModule):
             # Copy instructions
             instructions_path = (
                 Path(self.config.paperbench_dir)
-                / "src" / "paperbench" / "instructions" / "instructions.txt"
+                / "src"
+                / "paperbench"
+                / "instructions"
+                / "instructions.txt"
             )
             if instructions_path.exists():
                 shutil.copy2(instructions_path, tmp_path / "instructions.txt")
@@ -182,7 +188,9 @@ class PaperbenchTask(TaskModule):
             "judge_num_invalid_nodes": 0,
             "judge_duration": 0.0,
             "judge_type": config.judge_type,
-            "judge_model": config.judge_model if config.judge_type == "simple" else None,
+            "judge_model": (
+                config.judge_model if config.judge_type == "simple" else None
+            ),
             "judge_token_usage": {},
             "judge_cost": 0.0,
             "max_depth": config.test_max_depth,
@@ -201,7 +209,9 @@ class PaperbenchTask(TaskModule):
             return result
 
         # Run reproduce.sh
-        print(f"[PaperBench] Running reproduce.sh (timeout: {config.test_reproduce_timeout}s)...")
+        print(
+            f"[PaperBench] Running reproduce.sh (timeout: {config.test_reproduce_timeout}s)..."
+        )
         reproduce_start = datetime.now()
 
         workspace.execute_command(
@@ -219,25 +229,32 @@ class PaperbenchTask(TaskModule):
 
         output = reproduce_result.stdout or ""
         if len(output) > 10000:
-            result["reproduce_log"] = output[:5000] + "\n...[truncated]...\n" + output[-5000:]
+            result["reproduce_log"] = (
+                output[:5000] + "\n...[truncated]...\n" + output[-5000:]
+            )
         else:
             result["reproduce_log"] = output
         result["reproduce_success"] = (
             reproduce_result.exit_code == 0 or "EXIT_CODE=0" in output
         )
-        print(f"[PaperBench] reproduce.sh: success={result['reproduce_success']}, "
-              f"duration={result['reproduce_duration']:.1f}s")
+        print(
+            f"[PaperBench] reproduce.sh: success={result['reproduce_success']}, "
+            f"duration={result['reproduce_duration']:.1f}s"
+        )
 
         # Run judge via subprocess
         if config.test_max_depth > 0:
-            print(f"[PaperBench] Running judge (max_depth={config.test_max_depth}, "
-                  f"type={config.judge_type}, model={config.judge_model})...")
+            print(
+                f"[PaperBench] Running judge (max_depth={config.test_max_depth}, "
+                f"type={config.judge_type}, model={config.judge_model})..."
+            )
             judge_start = datetime.now()
 
             try:
                 # Clean untracked AND ignored files before tarball
                 workspace.execute_command(
-                    "cd /workspace/submission && git clean -fdx 2>&1 || true", timeout=60
+                    "cd /workspace/submission && git clean -fdx 2>&1 || true",
+                    timeout=60,
                 )
 
                 # Create tarball in container, excluding large files (>10MB)
@@ -248,14 +265,23 @@ class PaperbenchTask(TaskModule):
                     timeout=120,
                 )
                 if tar_result.exit_code != 0:
-                    raise RuntimeError("Failed to create submission tarball in container")
+                    raise RuntimeError(
+                        "Failed to create submission tarball in container"
+                    )
 
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     local_tar = Path(tmp_dir) / "submission.tar.gz"
                     container_id = workspace._container_id
                     cp_result = subprocess.run(
-                        ["docker", "cp", f"{container_id}:{submission_tar}", str(local_tar)],
-                        capture_output=True, text=True, timeout=120,
+                        [
+                            "docker",
+                            "cp",
+                            f"{container_id}:{submission_tar}",
+                            str(local_tar),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
                     )
                     if cp_result.returncode != 0:
                         raise RuntimeError(f"docker cp failed: {cp_result.stderr}")
@@ -267,33 +293,49 @@ class PaperbenchTask(TaskModule):
 
                     submission_path = extract_dir / "submission"
                     if not submission_path.exists():
-                        raise RuntimeError(f"Submission directory not found after extraction")
+                        raise RuntimeError(
+                            f"Submission directory not found after extraction"
+                        )
 
                     agent_python = os.environ.get("JUDGE_PYTHON", sys.executable)
                     judge_runner = str(
-                        Path(__file__).resolve().parent.parent / "judge" / "judge_runner.py"
+                        Path(__file__).resolve().parent.parent
+                        / "judge"
+                        / "judge_runner.py"
                     )
                     result_file = str(Path(tmp_dir) / "judge_result.json")
                     log_dir = str(Path(config.output_dir) / "judge_logs")
                     data_dir = config.paperbench_dir
 
                     cmd = [
-                        agent_python, judge_runner,
-                        "--submission_path", str(submission_path),
-                        "--paper_id", config.paper_id,
-                        "--judge_type", config.judge_type,
-                        "--judge_model", config.judge_model,
-                        "--max_depth", str(config.test_max_depth),
-                        "--log_dir", log_dir,
-                        "--result_file", result_file,
-                        "--data_dir", data_dir,
+                        agent_python,
+                        judge_runner,
+                        "--submission_path",
+                        str(submission_path),
+                        "--paper_id",
+                        config.paper_id,
+                        "--judge_type",
+                        config.judge_type,
+                        "--judge_model",
+                        config.judge_model,
+                        "--max_depth",
+                        str(config.test_max_depth),
+                        "--log_dir",
+                        log_dir,
+                        "--result_file",
+                        result_file,
+                        "--data_dir",
+                        data_dir,
                     ]
                     if config.code_dev:
                         cmd.append("--code_dev")
 
                     print(f"[PaperBench] Running judge subprocess...")
                     proc = subprocess.run(
-                        cmd, capture_output=True, text=True, timeout=600,
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
                     )
 
                     if proc.returncode != 0:
@@ -307,13 +349,17 @@ class PaperbenchTask(TaskModule):
 
                     result["judge_score"] = judge_result["score"]
                     result["judge_num_nodes"] = judge_result["num_nodes"]
-                    result["judge_num_invalid_nodes"] = judge_result["num_invalid_nodes"]
+                    result["judge_num_invalid_nodes"] = judge_result[
+                        "num_invalid_nodes"
+                    ]
                     result["judge_token_usage"] = judge_result.get("token_usage", {})
                     result["judge_cost"] = judge_result.get("cost", 0.0)
                     result["graded_task_tree"] = judge_result["graded_task_tree"]
                     print(f"[PaperBench] Judge score: {judge_result['score']:.4f}")
                     print(f"[PaperBench] Judge nodes: {judge_result['num_nodes']}")
-                    print(f"[PaperBench] Judge invalid nodes: {judge_result['num_invalid_nodes']}")
+                    print(
+                        f"[PaperBench] Judge invalid nodes: {judge_result['num_invalid_nodes']}"
+                    )
                     print(f"[PaperBench] Judge cost: ${result['judge_cost']:.4f}")
 
             except BaseException as e:
@@ -332,7 +378,7 @@ class PaperbenchTask(TaskModule):
     # ---- Manager integration methods ----
 
     def post_load_task_data(self):
-        from core.utils import get_paper_info, load_rubric
+        from orcaid.core.utils import get_paper_info, load_rubric
 
         self.paper_info = get_paper_info(self.config)
         logs = [
@@ -358,10 +404,11 @@ class PaperbenchTask(TaskModule):
         }
 
     def build_analysis_from_state(self):
-        if not getattr(self, 'task_tree', None):
+        if not getattr(self, "task_tree", None):
             return None, []
 
-        from core.utils import build_analysis_result
+        from orcaid.core.utils import build_analysis_result
+
         leaf_tasks = self.task_tree.get_leaf_nodes()
         categories = {}
         for leaf in leaf_tasks:
@@ -369,8 +416,13 @@ class PaperbenchTask(TaskModule):
             categories[cat] = categories.get(cat, 0) + 1
 
         analysis = build_analysis_result(
-            {"analysis": {"paper_context": self.paper_info.title if self.paper_info else "", "total_tasks": len(leaf_tasks)}},
-            self.task_tree
+            {
+                "analysis": {
+                    "paper_context": self.paper_info.title if self.paper_info else "",
+                    "total_tasks": len(leaf_tasks),
+                }
+            },
+            self.task_tree,
         )
 
         logs = [f"Leaf tasks: {len(leaf_tasks)}"]
@@ -383,19 +435,27 @@ class PaperbenchTask(TaskModule):
         existing = extract_fn(events, key_to_find="delegation_plan")
         return (
             existing
-            and isinstance(existing.get("delegation_plan", {}).get("first_round", {}).get("tasks"), list)
+            and isinstance(
+                existing.get("delegation_plan", {}).get("first_round", {}).get("tasks"),
+                list,
+            )
             and len(existing["delegation_plan"]["first_round"]["tasks"]) > 0
         )
 
     def build_subagent(self, engineer_id, primary_task, all_tasks):
-        from config import SubAgent
+        from orcaid.config import SubAgent
+
         all_requirements = []
         all_instructions = []
         for t in all_tasks:
             all_requirements.append(t.requirements)
             all_instructions.append(f"Task: {t.task_id}\n{t.instruction}")
         combined_instruction = "\n\n---\n\n".join(all_instructions)
-        combined_requirements = "\n\n".join(all_requirements) if len(all_requirements) > 1 else all_requirements[0]
+        combined_requirements = (
+            "\n\n".join(all_requirements)
+            if len(all_requirements) > 1
+            else all_requirements[0]
+        )
         subagent = SubAgent(
             engineer_id=engineer_id,
             task_id=primary_task.task_id,
@@ -406,7 +466,9 @@ class PaperbenchTask(TaskModule):
             task_category=primary_task.task_category,
             submission_path="/workspace/submission",
         )
-        combine_log = f"  (Combined {len(all_tasks)} tasks)" if len(all_tasks) > 1 else None
+        combine_log = (
+            f"  (Combined {len(all_tasks)} tasks)" if len(all_tasks) > 1 else None
+        )
         return subagent, combine_log
 
     def get_worktree_name(self, engineer_id):
@@ -432,15 +494,21 @@ class PaperbenchTask(TaskModule):
     def search_alternative_json(self, events, extract_fn, log_fn):
         review_json = extract_fn(events, key_to_find=None)
         if review_json:
-            log_fn(f"No assign_task JSON found, but found JSON with keys: {list(review_json.keys())}")
+            log_fn(
+                f"No assign_task JSON found, but found JSON with keys: {list(review_json.keys())}"
+            )
             for key in ["task_assignment", "next_task"]:
                 if key in review_json:
                     data = review_json[key]
                     first_round = data.get("first_round", data)
                     review_json = {
                         "assign_task": {
-                            "reasoning": first_round.get("reasoning", data.get("reasoning", "")),
-                            "tasks": first_round.get("tasks", data.get("tasks", data.get("assignments", []))),
+                            "reasoning": first_round.get(
+                                "reasoning", data.get("reasoning", "")
+                            ),
+                            "tasks": first_round.get(
+                                "tasks", data.get("tasks", data.get("assignments", []))
+                            ),
                         }
                     }
                     log_fn(f"Converted '{key}' format to assign_task format")
@@ -466,7 +534,7 @@ class PaperbenchTask(TaskModule):
         header = "Single Agent Mode - Reproducing Paper"
         gpu_result = workspace.execute_command(
             "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo ''",
-            timeout=30
+            timeout=30,
         )
         gpu_info = gpu_result.stdout.strip() if gpu_result.exit_code == 0 else ""
         if gpu_info:
@@ -491,7 +559,8 @@ class PaperbenchTask(TaskModule):
     # ---- SubAgent runner integration methods ----
 
     def create_subagent_result(self, subagent):
-        from config import SubAgentResult
+        from orcaid.config import SubAgentResult
+
         return SubAgentResult(
             engineer_id=subagent.engineer_id,
             task_id=subagent.task_id,
@@ -561,6 +630,7 @@ class PaperbenchTask(TaskModule):
 
     def get_log_agent_response_kwargs(self, result):
         from datetime import datetime
+
         return {
             "engineer_id": result.engineer_id,
             "task_id": result.task_id,
@@ -577,17 +647,25 @@ class PaperbenchTask(TaskModule):
             "prompt_tokens": result.prompt_tokens,
             "completion_tokens": result.completion_tokens,
             "total_tokens": result.total_tokens,
-            "start_time": datetime.fromisoformat(result.start_time) if result.start_time else None,
-            "end_time": datetime.fromisoformat(result.end_time) if result.end_time else None,
+            "start_time": (
+                datetime.fromisoformat(result.start_time) if result.start_time else None
+            ),
+            "end_time": (
+                datetime.fromisoformat(result.end_time) if result.end_time else None
+            ),
             "round_num": result.round_num,
         }
 
-    def get_conflict_instruction_args(self, subagent, conflict_files, workspace, repo_dir):
+    def get_conflict_instruction_args(
+        self, subagent, conflict_files, workspace, repo_dir
+    ):
         conflict_file_list = "\n".join(f"  - {f}" for f in conflict_files)
         main_head_result = workspace.execute_command(
             f"cd {repo_dir} && git rev-parse HEAD", timeout=30
         )
-        main_head = main_head_result.stdout.strip() if main_head_result.exit_code == 0 else ""
+        main_head = (
+            main_head_result.stdout.strip() if main_head_result.exit_code == 0 else ""
+        )
         worktree = subagent.worktree_path or subagent.submission_path
         return {
             "conflict_file_list": conflict_file_list,
@@ -633,10 +711,12 @@ if __name__ == "__main__":
         print(f"  {paper_id:15s} -> config OK")
 
     # 5. Custom docker image
-    custom = PaperbenchTask(PaperbenchConfig(
-        paper_id="test",
-        docker_image="custom-registry/my-image:v1",
-    ))
+    custom = PaperbenchTask(
+        PaperbenchConfig(
+            paper_id="test",
+            docker_image="custom-registry/my-image:v1",
+        )
+    )
     assert custom.get_docker_image() == "custom-registry/my-image:v1"
     print(f"  custom image   -> {custom.get_docker_image()}")
 

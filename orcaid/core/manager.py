@@ -15,12 +15,12 @@ from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.tools.preset.default import get_default_tools
 
-from config import SubAgent
-from core.manager_assignment import AssignmentMixin
-from core.manager_exploration import ExplorationMixin
-from core.manager_git import GitMixin
-from core.manager_review import ReviewMixin
-from core.utils import (
+from orcaid.config import SubAgent
+from orcaid.core.manager_assignment import AssignmentMixin
+from orcaid.core.manager_exploration import ExplorationMixin
+from orcaid.core.manager_git import GitMixin
+from orcaid.core.manager_review import ReviewMixin
+from orcaid.core.utils import (
     PanelVisualizer,
     build_delegation_plan,
     build_delegation_prompt,
@@ -294,10 +294,12 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
         cost_before = metrics_before["cost"]
         tokens_before = metrics_before["total_tokens"]
 
-        self.log("Injecting gap context from orchestrator-memory...")
         try:
-            # pylint: disable=import-outside-toplevel
-            from orcaid_verification_bridge import discovery_scan_for_orcaid
+            try:
+                from orcaid.bridge import discovery_scan_for_orcaid
+            except ImportError:
+                # pylint: disable=import-outside-toplevel
+                from orcaid_verification_bridge import discovery_scan_for_orcaid
 
             gaps = discovery_scan_for_orcaid()
             if gaps:

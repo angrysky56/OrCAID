@@ -18,10 +18,10 @@ from openhands.workspace import DockerDevWorkspace, DockerWorkspace
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 
-from config import WorkflowConfig
-from core.manager import Manager
-from core.subagent import SubAgentRunner, run_subagents_parallel
-from core.utils import (
+from orcaid.config import WorkflowConfig
+from orcaid.core.manager import Manager
+from orcaid.core.subagent import SubAgentRunner, run_subagents_parallel
+from orcaid.core.utils import (
     OutputLogger,
     TeeLogger,
     build_llm_kwargs,
@@ -37,7 +37,7 @@ from core.utils import (
     save_all_costs,
     serialize_event,
 )
-from tasks.commit0 import Commit0Task
+from orcaid.tasks.commit0 import Commit0Task
 
 litellm.set_verbose = False
 litellm.drop_params = True
@@ -89,7 +89,7 @@ async def run_workflow_inner(
 
     sdk_source_dir = os.getenv(
         "SDK_SOURCE_DIR",
-        str(Path(__file__).resolve().parent.parent / "software-agent-sdk"),
+        str(Path(__file__).resolve().parent.parent.parent / "software-agent-sdk"),
     )
 
     print("\n[Setup] Creating Docker workspace...")
