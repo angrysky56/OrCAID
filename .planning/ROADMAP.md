@@ -8,7 +8,7 @@
 - [x] Audit and improve functional code modifications.
 
 ## Phase 2: Advanced Delegation and Indexer Sweep Optimizations
-- [ ] Hardening the drift log formatting and directory sweep structure in the Verification Bridge.
-- [ ] Refining subagent assignment routing in `AssignmentMixin` based on historical drift rates of Hermes profiles.
-- [ ] Implementing the core indexer sweeping command (`orcaid-verification-indexer`) to rebuild `discovery.yaml`.
+- [x] Hardening the drift log formatting and directory sweep structure in the Verification Bridge.
+- [x] Refining subagent assignment routing in `AssignmentMixin` based on historical drift rates of Hermes profiles.
+- [x] Implementing the core indexer sweeping command (`orcaid-verification-indexer`) to rebuild `discovery.yaml`.
 
