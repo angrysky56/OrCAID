@@ -35,15 +35,16 @@ collect_and_merge() ──→ _verify_and_return()
               (called next iteration before scan_and_analyze)
 ```
 
-**Five files, four concepts:**
+**Core modules:**
 
-| File                            | Purpose                                                   |
-| ------------------------------- | --------------------------------------------------------- |
-| `core/manager.py`               | Manager agent — orchestrates the full workflow            |
-| `core/subagent.py`              | Engineer subagent spawner — one worktree per subagent     |
-| `orcaid_verification_bridge.py` | The self-healing layer — verification + drift correction  |
-| `config.py`                     | SubAgentResult dataclass (26 fields), SubAgent config     |
-| `orcaid` CLI                    | Entry point — sets up LLM, workspace, task, runs workflow |
+| Module                       | Purpose                                                    |
+| ---------------------------- | ---------------------------------------------------------- |
+| `orcaid/core/manager.py`    | Manager agent — orchestrates the full workflow              |
+| `orcaid/core/subagent.py`   | Engineer subagent spawner — one worktree per subagent       |
+| `orcaid/bridge.py`          | Self-healing layer — verification + drift correction        |
+| `orcaid/config.py`          | SubAgentResult dataclass (26 fields), SubAgent config       |
+| `orcaid/cli.py`             | CLI entrypoint — LLM setup, workspace, task, runs workflow  |
+| `orcaid/tasks/`             | Task implementations: Commit0, PaperBench, SelfImprove      |
 
 ---
 
@@ -70,7 +71,7 @@ SubAgentResult → bridge.scores_output() → delegation-verification checklist
                               → manager gets gap context before planning
 ```
 
-**Graceful degradation:** if `orcaid_verification_bridge` fails to import, `_verify_and_return` skips and returns `review_result` unchanged. OrCAID runs fine without the bridge.
+**Graceful degradation:** if `orcaid.bridge` fails to import, `_verify_and_return` skips and returns `review_result` unchanged. OrCAID runs fine without the bridge.
 
 ---
 
@@ -169,28 +170,59 @@ uv run orcaid --task commit0 --model <model> --single_agent
 
 ## Extending the Verification Bridge
 
-`orcaid_verification_bridge.py` has two extension points per SubAgentResult:
+`orcaid/bridge.py` has two extension points per SubAgentResult:
 
-**checklist_code_review.yaml** — for code implementation tasks
-**checklist_research_reproduction.yaml** — for paper reproduction tasks
+- **code_review checklist** — for code implementation tasks
+- **research_reproduction checklist** — for paper reproduction tasks
 
 Add new checklists as needed and wire them in `verify_subagent_completion()`.
+See [API.md](API.md) for the full bridge function reference.
+
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [SETUP.md](SETUP.md) | Prerequisites, installation, Docker, orchestrator-memory, cron |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Module map, data flow, isolation model, self-healing loop |
+| [CONFIGURATION.md](CONFIGURATION.md) | Environment variables, CLI flags, model routing, prompt templates |
+| [API.md](API.md) | Public interfaces: TaskModule ABC, config dataclasses, bridge functions |
+| [AGENTS.md](AGENTS.md) | Agent roles, delegation state machine, orchestrator memory |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, coding standards, commit conventions, extension guide |
+| [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
 
 ---
 
 ## Environment Variables
 
+See [CONFIGURATION.md](CONFIGURATION.md) for the full reference. Quick start:
+
 ```bash
-export LLM_BASE_URL=<your-proxy-url>
-export LLM_API_KEY=<your-api-key>
-export ORCHESTRATOR_MEMORY_BASE=~/.hermes/orchestrator-memory  # optional, default
+cp .env.example .env
+# Edit .env with your API keys and model preferences
+```
+
+Key variables:
+
+```bash
+LLM_MODEL=minimax/MiniMax-M2.7      # LiteLLM model identifier
+LLM_API_KEY=your-api-key-here        # Provider API key
+LLM_BASE_URL=https://api.minimax.io/v1  # OpenAI-compatible endpoint
 ```
 
 ---
 
 ## Dependencies
 
-- Python >= 3.12
-- [uv](https://docs.astral.sh/uv/) (package manager)
-- Docker (required by OpenHands workspace)
-- Dependencies: `uv sync`
+- **Python** >= 3.12
+- **[uv](https://docs.astral.sh/uv/)** — package manager
+- **Docker** — required for OpenHands workspace sandboxes
+- **Git** 2.5+ — worktree support
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
+
+See [SETUP.md](SETUP.md) for detailed installation instructions.
