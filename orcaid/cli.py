@@ -178,6 +178,10 @@ async def run_workflow_inner(
                         / f"{task_module.config.repo_name}_test_output.txt"
                     )
 
+                    # Ensure parent directories exist (handles cases where repo_name has slashes)
+                    exit_code_file.parent.mkdir(parents=True, exist_ok=True)
+                    test_output_file.parent.mkdir(parents=True, exist_ok=True)
+
                     with open(report_file, "w", encoding="utf-8") as f:
                         f.write(pytest_results["report_json"])
                     with open(exit_code_file, "w", encoding="utf-8") as f:
@@ -205,6 +209,8 @@ async def run_workflow_inner(
                         final_repo_dir = Path(workflow_config.output_dir) / "final_repo"
                         final_repo_dir.mkdir(parents=True, exist_ok=True)
                         tarball_local_path = final_repo_dir / f"{repo_name}.tar.gz"
+                        # Ensure parent directories exist (handles cases where repo_name has slashes)
+                        tarball_local_path.parent.mkdir(parents=True, exist_ok=True)
                         success = download_file_via_base64(
                             workspace,
                             f"/workspace/{tarball_name}",
@@ -608,6 +614,10 @@ async def run_workflow_inner(
                     / f"{task_module.config.repo_name}_test_output.txt"
                 )
 
+                # Ensure parent directories exist (handles cases where repo_name has slashes)
+                exit_code_file.parent.mkdir(parents=True, exist_ok=True)
+                test_output_file.parent.mkdir(parents=True, exist_ok=True)
+
                 with open(report_file, "w", encoding="utf-8") as f:
                     f.write(pytest_results["report_json"])
                 with open(exit_code_file, "w", encoding="utf-8") as f:
@@ -632,6 +642,8 @@ async def run_workflow_inner(
                     final_repo_dir = Path(workflow_config.output_dir) / "final_repo"
                     final_repo_dir.mkdir(parents=True, exist_ok=True)
                     tarball_local_path = final_repo_dir / f"{repo_name}.tar.gz"
+                    # Ensure parent directories exist (handles cases where repo_name has slashes)
+                    tarball_local_path.parent.mkdir(parents=True, exist_ok=True)
                     success = download_file_via_base64(
                         workspace, f"/workspace/{tarball_name}", str(tarball_local_path)
                     )

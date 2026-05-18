@@ -31,7 +31,7 @@ import yaml
 #   (e.g. cached checklists).  Defaults to ~/.orcaid/bridge.
 # ---------------------------------------------------------------------------
 
-_DEFAULT_ORCAID_HOME = Path.home() / ".orcaid"
+_DEFAULT_ORCAID_HOME = Path.home() / ".hermes"
 
 
 def get_memory_base() -> Path:
@@ -39,7 +39,7 @@ def get_memory_base() -> Path:
     return Path(
         os.environ.get(
             "ORCHESTRATOR_MEMORY_BASE",
-            str(_DEFAULT_ORCAID_HOME / "orchestrator-memory"),
+            str(Path.home() / ".hermes" / "orchestrator-memory"),
         )
     )
 
@@ -49,7 +49,7 @@ def get_bridge_storage() -> Path:
     return Path(
         os.environ.get(
             "ORCAID_BRIDGE_STORAGE",
-            str(_DEFAULT_ORCAID_HOME / "bridge"),
+            str(Path.home() / ".hermes" / "orcaid-bridge"),
         )
     )
 
@@ -84,6 +84,10 @@ class VerificationResult:
     correction_context: Optional[dict] = None
     escalate: bool = False
     attempt_number: int = 1
+    # Three-bond drift classification (per Chen et al. 2026, see
+    # ``orcaid.bond_classifier``). None means "ambiguous" / not classified.
+    missing_bond: Optional[str] = None
+    bond_classification_method: Optional[str] = None  # 'rules' | 'llm'
 
 
 @dataclass
@@ -203,15 +207,24 @@ def verify_subagent_result(
     task_type: str,
     checklist_base: Optional[Path] = None,
     attempt_number: int = 1,
+    prior_attempts: list | None = None,
 ) -> VerificationResult:
     """
     Score a SubAgentResult against the checklist for its task type.
 
     Returns VerificationResult with verdict, drift_log, verified_outcome,
-    and optionally correction_context for retry.
+    and optionally correction_context for retry. On a FAIL verdict, also
+    classifies the missing CoT bond via the three-bond classifier so the
+    meta-harness can learn the *shape* of failure (not just the count).
+
+    ``prior_attempts`` carries the prior-failed-attempt records for this
+    task_id (built by ``_get_prior_attempts``). Both the MOP retry policy
+    and the bond classifier consume it; the caller is responsible for
+    fetching it once and threading it through.
     """
     checklist = load_checklist(task_type, checklist_base)
     drift_log = []
+    prior_attempts = prior_attempts or []
 
     # Evaluate each pass criterion
     for criterion in checklist.get("pass_criteria", []):
@@ -251,12 +264,20 @@ def verify_subagent_result(
             retry_recommended=False,
         )
 
-    # FAIL — decide retry vs escalate
+    # FAIL — classify the missing bond, then decide retry vs escalate.
+    missing_bond, bond_method = _classify_missing_bond(
+        drift_log, subagent_result, prior_attempts, attempt_number
+    )
+
     max_retries = checklist.get("max_retries", 2)
 
     if attempt_number < max_retries:
         correction_context = _build_correction_context(
-            drift_log, subagent_result, task_type, attempt_number
+            drift_log,
+            subagent_result,
+            task_type,
+            attempt_number,
+            prior_attempts=prior_attempts,
         )
         return VerificationResult(
             verdict="fail",
@@ -265,6 +286,8 @@ def verify_subagent_result(
             retry_recommended=True,
             correction_context=correction_context,
             attempt_number=attempt_number,
+            missing_bond=missing_bond,
+            bond_classification_method=bond_method,
         )
     else:
         return VerificationResult(
@@ -274,7 +297,101 @@ def verify_subagent_result(
             retry_recommended=False,
             escalate=True,
             attempt_number=attempt_number,
+            missing_bond=missing_bond,
+            bond_classification_method=bond_method,
         )
+
+
+def _classify_missing_bond(
+    drift_log: list[dict],
+    subagent_result,
+    prior_attempts: list,
+    attempt_number: int,
+) -> tuple[Optional[str], Optional[str]]:
+    """Run the three-bond drift classifier with rules-first / LLM-fallback.
+
+    Returns ``(missing_bond, method)`` where ``method`` is ``'rules'``,
+    ``'llm'``, or ``None`` (if the classifier was disabled or remained
+    ambiguous). Controlled by env vars:
+
+    * ``ORCAID_BOND_CLASSIFY``  - "1" (default) or "0" to disable entirely.
+    * ``ORCAID_BOND_LLM_FALLBACK`` - "1" to call an LLM on ambiguous cases.
+      Off by default since the rules cover the common patterns and the LLM
+      adds cost.
+    """
+    if os.environ.get("ORCAID_BOND_CLASSIFY", "1") != "1":
+        return None, None
+
+    from orcaid.bond_classifier import classify_bond_deficit_rules
+
+    bond = classify_bond_deficit_rules(
+        drift_log,
+        subagent_result,
+        prior_attempts=prior_attempts,
+        attempt_number=attempt_number,
+    )
+    if bond is not None:
+        return bond, "rules"
+
+    if os.environ.get("ORCAID_BOND_LLM_FALLBACK", "0") == "1":
+        try:
+            bond = _llm_bond_fallback(
+                drift_log, subagent_result, prior_attempts, attempt_number
+            )
+            if bond is not None:
+                return bond, "llm"
+        except Exception:
+            # LLM fallback is best-effort; never fail the verification path.
+            pass
+
+    return None, None
+
+
+def _llm_bond_fallback(
+    drift_log: list[dict],
+    subagent_result,
+    prior_attempts: list,
+    attempt_number: int,
+) -> Optional[str]:
+    """LLM fallback for bond classification on ambiguous failures.
+
+    Uses the model wired into ``ORCAID_BOND_LLM_MODEL`` (default the manager
+    model) via ``litellm.completion``. Kept tiny and prompt-only — the
+    rubric prompt lives in ``orcaid.bond_classifier.llm_fallback_prompt``.
+    """
+    from orcaid.bond_classifier import (
+        llm_fallback_prompt,
+        parse_llm_fallback_response,
+    )
+
+    model = os.environ.get("ORCAID_BOND_LLM_MODEL") or os.environ.get("LITELLM_MODEL")
+    if not model:
+        return None
+    try:
+        import litellm
+    except ImportError:
+        return None
+
+    prompt = llm_fallback_prompt(
+        drift_log, subagent_result, prior_attempts, attempt_number
+    )
+    response = litellm.completion(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a strict rubric classifier. Output exactly one line.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=64,
+        temperature=0.0,
+    )
+    try:
+        content = response["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return parse_llm_fallback_response(content or "")
 
 
 def _check_criterion(criterion: dict, subagent_result, review_result: dict) -> bool:
@@ -384,22 +501,17 @@ def _build_verified_outcome(
     }
 
 
-def _build_correction_context(
-    drift_log: list[dict],
-    subagent_result,
-    task_type: str,
-    attempt_number: int,
-) -> dict:
-    """Build correction context for re-invoke."""
-    # Format drift log
-    drift_lines = []
-    for entry in drift_log:
-        drift_lines.append(
-            f"- [{entry['severity']}] {entry['criterion_id']}: {entry['failure_message']}"
-        )
-    drift_formatted = "\n".join(drift_lines) if drift_lines else "Unknown drift"
+def _format_drift_lines(drift_log: list[dict]) -> str:
+    """Render a drift_log as bullet lines for prompt injection."""
+    drift_lines = [
+        f"- [{entry['severity']}] {entry['criterion_id']}: {entry['failure_message']}"
+        for entry in drift_log
+    ]
+    return "\n".join(drift_lines) if drift_lines else "Unknown drift"
 
-    # Build original requirements from subagent result
+
+def _gather_requirements(subagent_result) -> list[str]:
+    """Pull the structured 'what was originally asked' lines off the result."""
     requirements = []
     if hasattr(subagent_result, "file_path") and subagent_result.file_path:
         requirements.append(f"file: {subagent_result.file_path}")
@@ -412,7 +524,17 @@ def _build_correction_context(
         )
     if hasattr(subagent_result, "requirements") and subagent_result.requirements:
         requirements.append(f"requirements: {subagent_result.requirements}")
+    return requirements
 
+
+def _kl_instructions(
+    drift_log: list[dict], subagent_result, attempt_number: int
+) -> str:
+    """KL-style correction: nudge the agent toward fixing the exact failing
+    criteria. This is the historical default — keeps retries close to the
+    previous attempt, applying targeted patches to the failing bits.
+    """
+    drift_formatted = _format_drift_lines(drift_log)
     instructions = f"""Review the drift log and correct your approach before re-executing.
 
 DRIFT LOG (attempt {attempt_number}):
@@ -427,13 +549,117 @@ CORRECTION:
 """
     for entry in drift_log:
         if entry["category"] == "phase_skip":
-            instructions += f"\n  - Ensure you make a commit with the expected files for {entry['criterion_id']}."
+            instructions += (
+                f"\n  - Ensure you make a commit with the expected files "
+                f"for {entry['criterion_id']}."
+            )
         elif entry["category"] == "protocol_breach":
             instructions += "\n  - Resolve merge conflicts before completing."
         elif entry["category"] == "criteria_mismatch":
             instructions += f"\n  - Fix: {entry['failure_message']}"
         else:
             instructions += f"\n  - Address: {entry['failure_message']}"
+    return instructions
+
+
+def _mop_instructions(
+    drift_log: list[dict],
+    subagent_result,
+    attempt_number: int,
+    prior_attempts: list,
+) -> str:
+    """MOP-style correction: maximize state-entropy from the cone of prior
+    failed attempts, bounded by the "test must pass" absorbing state.
+
+    Where KL-style retry says "fix this exact bit," MOP-style retry says
+    "all prior attempts touched <these files> and still failed — try a
+    *substantially different* approach." This implements the wiki claim
+    (mop-edm-cognitive-architecture, sec. KL Regularization Problem) that
+    KL toward a failing target is self-defeating for occupancy maximization.
+    """
+    drift_formatted = _format_drift_lines(drift_log)
+
+    # Build the avoidance manifold: union of files / criteria across history.
+    seen_files: set[str] = set()
+    seen_criteria: set[str] = set()
+    prior_lines: list[str] = []
+    # Include the *current* failed attempt as part of the manifold too — it
+    # is, after all, the most recent thing not to do again.
+    for f in subagent_result.files_modified or []:
+        seen_files.add(f)
+    for entry in drift_log:
+        cid = entry.get("criterion_id")
+        if cid:
+            seen_criteria.add(cid)
+    for p in prior_attempts:
+        for f in p.files_modified or []:
+            seen_files.add(f)
+        for c in p.failed_criterion_ids or []:
+            seen_criteria.add(c)
+        prior_lines.append(
+            f"  - attempt {p.attempt}: files={p.files_modified or 'none'}, "
+            f"failed_criteria={p.failed_criterion_ids or 'none'}"
+        )
+
+    prior_block = "\n".join(prior_lines) or "  (this is the first retry — only current attempt failed)"
+    files_block = ", ".join(sorted(seen_files)) or "none"
+    criteria_block = ", ".join(sorted(seen_criteria)) or "none"
+
+    instructions = f"""All prior attempts on this task have failed. The test is the
+absorbing state: it must pass. Otherwise, MAXIMIZE DIVERGENCE from prior
+attempts — different files, different functions, different logical structure.
+Do not refine the previous diff; try a substantively different approach.
+
+CURRENT DRIFT (attempt {attempt_number}):
+{drift_formatted}
+
+FAILURE MANIFOLD (do NOT repeat these directions):
+- Files touched so far: {files_block}
+- Criteria that keep failing: {criteria_block}
+
+PRIOR FAILED ATTEMPTS:
+{prior_block}
+
+INSTRUCTIONS:
+  1. Pick a retry direction that *minimizes overlap* with the failure manifold
+     above. Prefer different files/functions/strategies over patching the same diff.
+  2. The only hard constraint is the test command — it must pass at the end.
+  3. If you genuinely cannot change direction (e.g. there is only one file
+     that can solve this), explain why in your commit message.
+"""
+    return instructions
+
+
+def _build_correction_context(
+    drift_log: list[dict],
+    subagent_result,
+    task_type: str,
+    attempt_number: int,
+    prior_attempts: list | None = None,
+) -> dict:
+    """Build correction context for re-invoke.
+
+    Dispatches between the KL-style nudge-toward-target instruction and the
+    MOP-style maximize-divergence instruction based on the
+    ``ORCAID_RETRY_POLICY`` environment variable. Default ``kl`` keeps
+    existing behavior; set ``ORCAID_RETRY_POLICY=mop`` to enable the
+    diversity-maximizing retry policy for A/B testing.
+    """
+    drift_formatted = _format_drift_lines(drift_log)
+    requirements = _gather_requirements(subagent_result)
+    prior_attempts = prior_attempts or []
+
+    policy = os.environ.get("ORCAID_RETRY_POLICY", "kl").lower()
+    if policy not in ("kl", "mop"):
+        # Fail safely back to the historical policy if env var is malformed.
+        policy = "kl"
+
+    if policy == "mop":
+        instructions = _mop_instructions(
+            drift_log, subagent_result, attempt_number, prior_attempts
+        )
+    else:
+        instructions = _kl_instructions(drift_log, subagent_result, attempt_number)
 
     return {
         "task_id": subagent_result.task_id,
@@ -446,6 +672,7 @@ CORRECTION:
         "drift_log_formatted": drift_formatted,
         "instructions": instructions,
         "task_type": task_type,
+        "retry_policy": policy,
     }
 
 
@@ -507,12 +734,28 @@ def write_drift_log(
     correction_context: dict,
     subagent_result,
     memory_base: Optional[Path] = None,
+    *,
+    missing_bond: Optional[str] = None,
+    bond_classification_method: Optional[str] = None,
 ) -> Path:
-    """Write a drift log entry to orchestrator-memory."""
+    """Write a drift log entry to orchestrator-memory.
+
+    The frontmatter is extended with structured fields that the indexer
+    sweep and the bond classifier read back later:
+
+    * ``files_modified``        — list, used by MOP retry & exploration check.
+    * ``failed_criterion_ids``  — list, used by self-reflection check.
+    * ``missing_bond``          — three-bond classifier label or null.
+    * ``bond_classification_method`` — 'rules' | 'llm' | null.
+    * ``retry_policy``          — 'kl' | 'mop', so A/B runs can be sliced apart.
+    """
     memory_base = memory_base or ORCHESTRATOR_MEMORY_BASE
     task_type = correction_context.get("task_type", "unknown")
     task_id = correction_context.get("task_id", "unknown")
     attempt = correction_context.get("attempt_number", 1)
+    retry_policy = correction_context.get("retry_policy") or os.environ.get(
+        "ORCAID_RETRY_POLICY", "kl"
+    )
     timestamp = datetime.now().isoformat()
 
     filename = f"{task_id}__{attempt}__{timestamp.replace(':', '-')}.md"
@@ -531,6 +774,20 @@ def write_drift_log(
     # Format git diff safely in details block
     diff_content = getattr(subagent_result, "git_diff", "") or "No git diff available."
 
+    files_modified = list(getattr(subagent_result, "files_modified", []) or [])
+    failed_criterion_ids = [
+        entry.get("criterion_id", "") for entry in drift_log if entry.get("criterion_id")
+    ]
+
+    # YAML-emit lists inline so callers reading frontmatter back with
+    # ``yaml.safe_load`` round-trip cleanly.
+    files_modified_yaml = yaml.safe_dump(
+        files_modified, default_flow_style=True
+    ).strip()
+    failed_criterion_yaml = yaml.safe_dump(
+        failed_criterion_ids, default_flow_style=True
+    ).strip()
+
     content = f"""---
 drift_log: true
 task_id: {task_id}
@@ -539,6 +796,11 @@ attempt: {attempt}
 timestamp: {timestamp}
 resolution: in_progress
 engineer_id: {subagent_result.engineer_id}
+files_modified: {files_modified_yaml}
+failed_criterion_ids: {failed_criterion_yaml}
+missing_bond: {missing_bond or "null"}
+bond_classification_method: {bond_classification_method or "null"}
+retry_policy: {retry_policy}
 ---
 
 ## Drift Entries
@@ -650,8 +912,13 @@ def verify_subagent_completion(
     task_type = infer_task_type(subagent_result, task_module)
     orchestrator_memory_base = orchestrator_memory_base or ORCHESTRATOR_MEMORY_BASE
 
-    # Check for prior attempts (track retry count)
+    # Check for prior attempts (track retry count) — single fetch, reused by
+    # both the MOP retry policy and the three-bond classifier.
     attempt_number = _get_attempt_number(
+        subagent_result.task_id,
+        orchestrator_memory_base,
+    )
+    prior_attempts = _get_prior_attempts(
         subagent_result.task_id,
         orchestrator_memory_base,
     )
@@ -662,6 +929,7 @@ def verify_subagent_completion(
         task_type=task_type,
         checklist_base=orchestrator_memory_base,
         attempt_number=attempt_number,
+        prior_attempts=prior_attempts,
     )
 
     if verification.verdict == "pass" and verification.verified_outcome:
@@ -673,6 +941,8 @@ def verify_subagent_completion(
                 verification.correction_context,
                 subagent_result,
                 orchestrator_memory_base,
+                missing_bond=verification.missing_bond,
+                bond_classification_method=verification.bond_classification_method,
             )
 
     return verification
@@ -812,9 +1082,75 @@ def _get_attempt_number(task_id: str, memory_base: Path) -> int:
     return attempt
 
 
+def _get_prior_attempts(task_id: str, memory_base: Path) -> list:
+    """Return the list of prior failed attempts for this task_id.
+
+    Each entry is a ``PriorAttempt`` reconstructed from the YAML frontmatter
+    of a drift_log markdown file. Used by both the MOP retry policy (to
+    decide what to *avoid*) and the bond classifier (to detect locked-in /
+    repeated-failure patterns).
+
+    Drift_log frontmatter is the source of truth — body parsing is avoided
+    to keep this cheap and robust across format tweaks.
+    """
+    from orcaid.bond_classifier import PriorAttempt
+
+    drift_dir = memory_base / "drift_logs"
+    attempts: list = []
+    if not drift_dir.exists():
+        return attempts
+
+    for type_dir in drift_dir.iterdir():
+        if not type_dir.is_dir():
+            continue
+        for log_file in sorted(type_dir.glob(f"{task_id}_*__*.md")):
+            fm = parse_frontmatter(log_file)
+            if not fm.get("drift_log"):
+                continue
+            # Pre-bond-classifier drift_logs omit these fields; default safely.
+            attempts.append(
+                PriorAttempt(
+                    attempt=int(fm.get("attempt", 0) or 0),
+                    files_modified=list(fm.get("files_modified") or []),
+                    failed_criterion_ids=list(
+                        fm.get("failed_criterion_ids") or []
+                    ),
+                    missing_bond=fm.get("missing_bond") or None,
+                )
+            )
+    attempts.sort(key=lambda a: a.attempt)
+    return attempts
+
+
 # =============================================================================
 # Discovery Scan
 # =============================================================================
+
+
+def _bond_routing_hint(missing_bond: str) -> str:
+    """Map a missing-bond label to a one-line routing hint for the manager.
+
+    The mapping is derived from the engineer profiles' bond affinity:
+    developer/coder profiles produce the load-bearing backbone (Deep-Reasoning),
+    debugger profile produces the corrective fold-back (Self-Reflection), and
+    researcher profile produces alternative-direction proposals (Self-Exploration).
+    Reviewer is a check, not a bond producer.
+    """
+    table = {
+        "deep_reasoning": (
+            "route through a developer/coder profile first and require a commit "
+            "+ files_modified before any reflection step."
+        ),
+        "self_reflection": (
+            "route through a debugger profile with explicit 'test then fold back' "
+            "instructions; do not re-attempt without a corrective diff."
+        ),
+        "self_exploration": (
+            "route through a researcher profile and explicitly forbid touching "
+            "the files that prior attempts modified."
+        ),
+    }
+    return table.get(missing_bond, "no specific hint")
 
 
 def discovery_scan_for_orcaid(
@@ -849,6 +1185,32 @@ def discovery_scan_for_orcaid(
                     "drift_rate": drift_rate,
                     "total_failed": stats.get("total_failed", 0),
                     "description": f"Task type '{task_type}' has high drift rate: {drift_rate:.1%}",
+                }
+            )
+
+        # Bond-deficit pattern → emit a routing hint. The meta-harness uses
+        # this to choose a profile / strategy that targets the dominant deficit
+        # rather than treating all failures uniformly.
+        dominant = stats.get("dominant_deficit")
+        bond_counts = stats.get("bond_deficit_counts") or {}
+        classified_total = sum(
+            v for k, v in bond_counts.items() if k != "unclassified"
+        )
+        if dominant and classified_total >= 3:
+            hint = _bond_routing_hint(dominant)
+            dominant_count = bond_counts.get(dominant, 0)
+            gaps.append(
+                {
+                    "type": "bond_deficit",
+                    "task_type": task_type,
+                    "missing_bond": dominant,
+                    "count": dominant_count,
+                    "classified_total": classified_total,
+                    "description": (
+                        f"Task type '{task_type}' shows a {dominant} deficit "
+                        f"({dominant_count}/{classified_total} classified drifts). "
+                        f"Routing hint: {hint}"
+                    ),
                 }
             )
 
@@ -1095,6 +1457,8 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
             task_type = frontmatter.get("task_type", "unknown")
             profile = frontmatter.get("engineer_id", "unknown")
             timestamp = frontmatter.get("timestamp")
+            missing_bond = frontmatter.get("missing_bond")
+            retry_policy = frontmatter.get("retry_policy")
 
             # Aggregate task_type stats
             if task_type not in index["task_types"]:
@@ -1105,10 +1469,39 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
                     "last_verified": None,
                     "last_outcome": None,
                     "_last_timestamp": None,
+                    "bond_deficit_counts": {
+                        "deep_reasoning": 0,
+                        "self_reflection": 0,
+                        "self_exploration": 0,
+                        "unclassified": 0,
+                    },
+                    "retry_policy_counts": {"kl": 0, "mop": 0},
                 }
 
             stats = index["task_types"][task_type]
             stats["total_failed"] += 1
+
+            # Bond aggregation — count unclassified explicitly so the prompt
+            # injection can decide whether the deficit pattern is meaningful.
+            bond_counts = stats.setdefault(
+                "bond_deficit_counts",
+                {
+                    "deep_reasoning": 0,
+                    "self_reflection": 0,
+                    "self_exploration": 0,
+                    "unclassified": 0,
+                },
+            )
+            if missing_bond in bond_counts:
+                bond_counts[missing_bond] += 1
+            else:
+                bond_counts["unclassified"] += 1
+
+            # Retry-policy aggregation for the A/B slice. Default to 'kl' for
+            # pre-Phase-A drift_logs that lack the field.
+            rp_counts = stats.setdefault("retry_policy_counts", {"kl": 0, "mop": 0})
+            rp_key = retry_policy if retry_policy in rp_counts else "kl"
+            rp_counts[rp_key] = rp_counts.get(rp_key, 0) + 1
 
             if timestamp:
                 if not stats["_last_timestamp"] or timestamp > stats["_last_timestamp"]:
@@ -1141,6 +1534,18 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
         stats.pop("_last_timestamp", None)
         total = stats["total_completed"] + stats["total_failed"]
         stats["drift_rate"] = stats["total_failed"] / total if total > 0 else 0.0
+
+        # Determine the dominant bond deficit, if any. Used by the discovery
+        # scan to inject routing hints into the next planning pass.
+        bond_counts = stats.get("bond_deficit_counts", {}) or {}
+        # Only consider real bond labels for "dominant" (skip unclassified).
+        candidates = {
+            k: v for k, v in bond_counts.items() if k != "unclassified" and v > 0
+        }
+        if candidates:
+            stats["dominant_deficit"] = max(candidates, key=candidates.get)
+        else:
+            stats["dominant_deficit"] = None
 
     for p_stats in index["profiles"].values():
         total = p_stats["total_completed"] + p_stats["total_failed"]

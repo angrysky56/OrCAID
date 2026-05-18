@@ -11,8 +11,9 @@ from .base import TaskModule
 @dataclass
 class Commit0Config:
     repo_name: str = "minitorch"
-    base_branch: str = "commit0_combined"
+    base_branch: str = "main"
     docker_image_prefix: str = "docker.io/wentingzhao/"
+    docker_image: str = ""  # Override docker image directly (e.g., "docker.io/wentingzhao/minitorch:v0")
     dataset_path: str = "data/commit0/commit0_combined"
 
 
@@ -22,6 +23,8 @@ class Commit0Task(TaskModule):
         self.task_data = None
 
     def get_docker_image(self):
+        if self.config.docker_image:
+            return self.config.docker_image
         prefix = self.config.docker_image_prefix.rstrip("/")
         return f"{prefix}/{self.config.repo_name}:v0".lower()
 

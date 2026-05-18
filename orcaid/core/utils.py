@@ -1279,6 +1279,7 @@ def build_task_module(task, **kwargs):
                 "repo": "repo_name",
                 "base_branch": "base_branch",
                 "docker_image_prefix": "docker_image_prefix",
+                "docker_image": "docker_image",
                 "dataset_path": "dataset_path",
             },
         )
@@ -1336,7 +1337,10 @@ def build_output_dir(task, model_name, workflow_config, multi_agent=True, **kwar
 
     if task == "commit0":
         repo = kwargs.get("repo", "minitorch")
-        return str(Path("outputs") / "commit0" / model_short / repo / mode / params)
+        # Normalize repo name: "owner/repo" -> "repo", "repo" -> "repo"
+        # Both build_output_dir and pytest filenames use this; keep them in sync
+        repo_short = repo.split("/")[-1]
+        return str(Path("outputs") / "commit0" / model_short / repo_short / mode / params)
     elif task == "paperbench":
         paper_id = kwargs.get("paper_id", "rice")
         code_dev_str = "true" if kwargs.get("code_dev", True) else "false"

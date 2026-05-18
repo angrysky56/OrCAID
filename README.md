@@ -37,14 +37,14 @@ collect_and_merge() ──→ _verify_and_return()
 
 **Core modules:**
 
-| Module                       | Purpose                                                    |
-| ---------------------------- | ---------------------------------------------------------- |
-| `orcaid/core/manager.py`    | Manager agent — orchestrates the full workflow              |
-| `orcaid/core/subagent.py`   | Engineer subagent spawner — one worktree per subagent       |
-| `orcaid/bridge.py`          | Self-healing layer — verification + drift correction        |
-| `orcaid/config.py`          | SubAgentResult dataclass (26 fields), SubAgent config       |
-| `orcaid/cli.py`             | CLI entrypoint — LLM setup, workspace, task, runs workflow  |
-| `orcaid/tasks/`             | Task implementations: Commit0, PaperBench, SelfImprove      |
+| Module                    | Purpose                                                    |
+| ------------------------- | ---------------------------------------------------------- |
+| `orcaid/core/manager.py`  | Manager agent — orchestrates the full workflow             |
+| `orcaid/core/subagent.py` | Engineer subagent spawner — one worktree per subagent      |
+| `orcaid/bridge.py`        | Self-healing layer — verification + drift correction       |
+| `orcaid/config.py`        | SubAgentResult dataclass (26 fields), SubAgent config      |
+| `orcaid/cli.py`           | CLI entrypoint — LLM setup, workspace, task, runs workflow |
+| `orcaid/tasks/`           | Task implementations: Commit0, PaperBench, SelfImprove     |
 
 ---
 
@@ -182,15 +182,15 @@ See [API.md](API.md) for the full bridge function reference.
 
 ## Documentation
 
-| Document | Description |
-|---|---|
-| [SETUP.md](SETUP.md) | Prerequisites, installation, Docker, orchestrator-memory, cron |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Module map, data flow, isolation model, self-healing loop |
-| [CONFIGURATION.md](CONFIGURATION.md) | Environment variables, CLI flags, model routing, prompt templates |
-| [API.md](API.md) | Public interfaces: TaskModule ABC, config dataclasses, bridge functions |
-| [AGENTS.md](AGENTS.md) | Agent roles, delegation state machine, orchestrator memory |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, coding standards, commit conventions, extension guide |
-| [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
+| Document                             | Description                                                             |
+| ------------------------------------ | ----------------------------------------------------------------------- |
+| [SETUP.md](SETUP.md)                 | Prerequisites, installation, Docker, orchestrator-memory, cron          |
+| [ARCHITECTURE.md](ARCHITECTURE.md)   | Module map, data flow, isolation model, self-healing loop               |
+| [CONFIGURATION.md](CONFIGURATION.md) | Environment variables, CLI flags, model routing, prompt templates       |
+| [API.md](API.md)                     | Public interfaces: TaskModule ABC, config dataclasses, bridge functions |
+| [AGENTS.md](AGENTS.md)               | Agent roles, delegation state machine, orchestrator memory              |
+| [CONTRIBUTING.md](CONTRIBUTING.md)   | Dev setup, coding standards, commit conventions, extension guide        |
+| [CHANGELOG.md](CHANGELOG.md)         | Version history and release notes                                       |
 
 ---
 
