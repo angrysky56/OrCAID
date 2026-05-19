@@ -7,6 +7,9 @@ Handles task analysis, delegation, and subagent orchestration.
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -113,6 +116,187 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
     def log(self, message: str) -> None:
         """Log a message to stdout with a [Manager] prefix."""
         print(f"[Manager] {message}")
+
+    def _run_pre_scan_scripts(self) -> bool:
+        """
+        Step A of the skill-based refactor: run deterministic Python scripts
+        to extract pass stubs and dependency graph BEFORE the scan_analysis
+        LLM call.
+
+        Returns True if both scripts produced usable data — the caller can
+        then build ``self.analysis_result`` directly via
+        ``_build_analysis_from_prescan`` and *skip* the LLM exploration step
+        entirely. Returns False on any failure (no repo, non-Python repo,
+        script error, no pass-stubs found), in which case the caller should
+        fall back to the legacy LLM exploration path.
+
+        Side effect: stores raw output dicts on ``self._pre_scan_pass_data``
+        and ``self._pre_scan_dep_data`` for later use by the Step-B
+        skill-based delegation path (which can read these instead of re-running
+        the scripts). Does NOT send any message into ``self.conversation`` —
+        injecting the pre-scan into the conversation while also keeping the
+        legacy "go explore the repo" scan prompt is the *contradictory
+        instructions* bug fixed by this commit.
+        """
+        self._pre_scan_pass_data = None
+        self._pre_scan_dep_data = None
+
+        repo_dir = Path(self.repo_dir)
+        if not repo_dir.exists():
+            self.log(f"[pre-scan] repo_dir not found: {repo_dir}, skipping scripts")
+            return False
+
+        skills_root = Path(__file__).parent.parent / "skills"
+        pass_script = skills_root / "repo-scan" / "scripts" / "find_pass_stubs.py"
+        dep_script = skills_root / "dependency-graph" / "scripts" / "build_dependency_graph.py"
+
+        # 1. find_pass_stubs.py
+        pass_output = self._run_script(pass_script, str(repo_dir))
+        if pass_output is None:
+            self.log("[pre-scan] find_pass_stubs.py failed, falling back to LLM exploration")
+            return False
+
+        try:
+            pass_data = json.loads(pass_output)
+        except json.JSONDecodeError:
+            self.log("[pre-scan] find_pass_stubs.py returned invalid JSON, falling back")
+            return False
+
+        pass_files = pass_data.get("files", [])
+        self.log(f"[pre-scan] found {len(pass_files)} files with pass stubs")
+
+        if not pass_files:
+            self.log(
+                "[pre-scan] zero pass-stubs found — non-commit0 repo or non-Python? "
+                "falling back to LLM exploration"
+            )
+            return False
+
+        # 2. build_dependency_graph.py (takes pass_files JSON on stdin)
+        dep_output = self._run_script(
+            dep_script,
+            str(repo_dir),
+            input_json={"files": pass_files},
+        )
+
+        dep_data: dict = {"repo": str(repo_dir), "graph": {}, "files_analyzed": 0}
+        if dep_output is not None:
+            try:
+                dep_data = json.loads(dep_output)
+            except json.JSONDecodeError:
+                self.log("[pre-scan] build_dependency_graph.py returned invalid JSON — proceeding without deps")
+        else:
+            self.log("[pre-scan] build_dependency_graph.py failed — proceeding without deps")
+
+        self._pre_scan_pass_data = pass_data
+        self._pre_scan_dep_data = dep_data
+        return True
+
+    def _build_analysis_from_prescan(self):
+        """Construct an ``AnalysisResult`` directly from pre-scan script output.
+
+        This is what makes Step A actually *replace* the LLM exploration
+        instead of augmenting it. The deterministic scripts already know
+        every fact the LLM was being asked to discover: which files have
+        ``pass`` stubs, which functions inside them, and which other pass
+        files they import from. Build the analysis dataclass from those facts
+        and the LLM exploration step becomes redundant.
+
+        Returns the constructed ``AnalysisResult`` or ``None`` if pre-scan
+        data is missing/empty (caller should fall back to LLM path).
+        """
+        from orcaid.config import AnalysisResult
+
+        pass_data = getattr(self, "_pre_scan_pass_data", None) or {}
+        dep_data = getattr(self, "_pre_scan_dep_data", None) or {}
+
+        files = pass_data.get("files", [])
+        if not files:
+            return None
+
+        pass_files = [pf["file"] for pf in files]
+        functions_by_file = {
+            pf["file"]: list(pf.get("functions", [])) for pf in files
+        }
+        blocking_dependencies = dep_data.get("graph", {}) or {}
+        total_funcs = sum(len(pf.get("functions", [])) for pf in files)
+
+        # Implementation order: same heuristic as build_analysis_result() in
+        # utils.py — files that *more other files depend on* go first.
+        blocked_by_count: dict[str, int] = {}
+        for deps in blocking_dependencies.values():
+            for dep in deps or []:
+                blocked_by_count[dep] = blocked_by_count.get(dep, 0) + 1
+        implementation_order = sorted(
+            set(pass_files),
+            key=lambda f: blocked_by_count.get(f, 0),
+            reverse=True,
+        )
+
+        result = AnalysisResult()
+        result.pass_files = pass_files
+        result.functions_by_file = functions_by_file
+        result.blocking_dependencies = blocking_dependencies
+        result.total_funcs = total_funcs
+        result.implementation_order = implementation_order
+        result.priority_reasoning = (
+            f"Pre-scan (deterministic) found {len(pass_files)} pass-stub files "
+            f"with {total_funcs} functions; ordered by inbound dependency count."
+        )
+        result.repo_context = (
+            f"Pre-scanned repository at {pass_data.get('repo', self.repo_dir)}."
+        )
+        result.raw_analysis = {
+            "source": "pre-scan-deterministic",
+            "pass_data": pass_data,
+            "dep_data": dep_data,
+        }
+        return result
+
+    def _run_script(
+        self, script_path: Path, *args: str, input_json: dict | None = None
+    ) -> str | None:
+        """Run a skill script, return stdout on success or None on failure."""
+        if not script_path.exists():
+            return None
+        cmd = [sys.executable, str(script_path), *args]
+        try:
+            inp = json.dumps(input_json).encode() if input_json else None
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=60,
+                input=inp,
+            )
+            if result.returncode == 0 and result.stdout:
+                return result.stdout.decode().strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return None
+
+    def _inject_pre_scan_context(
+        self, pass_data: dict, dep_data: dict
+    ) -> None:
+        """Send pre-scanned pass stubs + dep graph into the conversation."""
+        pass_files = pass_data.get("files", [])
+        dep_graph = dep_data.get("graph", {})
+
+        lines = [
+            "## Pre-scanned Repository Analysis (deterministic, no LLM burn)\n",
+            f"**Files with pass stubs:** {len(pass_files)}\n",
+        ]
+        for pf in pass_files[:20]:
+            funcs = ", ".join(pf["functions"][:5])
+            lines.append(f"- `{pf['file']}`: [{funcs}]")
+        if len(pass_files) > 20:
+            lines.append(f"  ... and {len(pass_files) - 20} more files")
+
+        if dep_graph:
+            lines.append("\n**Dependency graph** (top 10):")
+            for f, deps in list(dep_graph.items())[:10]:
+                lines.append(f"  `{f}` → {list(deps)}")
+
+        self.conversation.send_message("\n".join(lines))
 
     def save_events(self, phase: str, event_start_idx: int = 0) -> None:
         """
@@ -318,37 +502,58 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
         except (ImportError, AttributeError, RuntimeError) as e:
             self.log(f"[VerificationBridge] discovery_scan_for_orcaid skipped: {e}")
 
-        self.log("Starting analysis...")
-        prompt = self.prompts.get("scan_analysis", "")
-        self.conversation.send_message(prompt)
+        # Step A: run deterministic Python scripts to extract pass stubs + dep graph
+        # On success, build analysis_result *directly* from the script output and
+        # SKIP the LLM exploration entirely — the deterministic scripts already
+        # know everything the LLM was being asked to discover.
+        prescan_ok = self._run_pre_scan_scripts()
+        prescan_analysis = self._build_analysis_from_prescan() if prescan_ok else None
 
-        try:
-            self.conversation.run()
-        except ConversationRunError as e:
-            self.log(f"Agent run failed: {e}")
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            self.log(f"Agent run ended with unexpected error: {e}")
+        if prescan_analysis is not None:
+            self.log(
+                "[pre-scan] using deterministic analysis — skipping LLM exploration "
+                f"({prescan_analysis.total_funcs} functions across "
+                f"{len(prescan_analysis.pass_files)} files)"
+            )
+            self.analysis_result = prescan_analysis
+            self.analysis_end_time = datetime.now()
+            duration = (self.analysis_end_time - self.analysis_start_time).total_seconds()
+            self.analysis_cost = 0.0
+            self.analysis_tokens = 0
+            iterations = 0
+            self.log(f"Analysis (deterministic) completed in {duration:.1f}s — $0.00, 0 tokens")
+        else:
+            self.log("Starting analysis (LLM exploration path)...")
+            prompt = self.prompts.get("scan_analysis", "")
+            self.conversation.send_message(prompt)
 
-        self.analysis_end_time = datetime.now()
-        duration = (self.analysis_end_time - self.analysis_start_time).total_seconds()
-        events = self.conversation.state.events
-        iterations = count_llm_iterations(events)
+            try:
+                self.conversation.run()
+            except ConversationRunError as e:
+                self.log(f"Agent run failed: {e}")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                self.log(f"Agent run ended with unexpected error: {e}")
 
-        metrics_after = extract_conversation_metrics(self.conversation)
-        self.analysis_cost = metrics_after["cost"] - cost_before
-        self.analysis_tokens = metrics_after["total_tokens"] - tokens_before
+            self.analysis_end_time = datetime.now()
+            duration = (self.analysis_end_time - self.analysis_start_time).total_seconds()
+            events = self.conversation.state.events
+            iterations = count_llm_iterations(events)
 
-        self.log(f"Analysis completed in {duration:.1f}s")
-        self.log(f"Iterations: {iterations}/{self.config.manager_max_iterations}")
-        self.log(f"Cost: ${self.analysis_cost:.4f} ({self.analysis_tokens} tokens)")
+            metrics_after = extract_conversation_metrics(self.conversation)
+            self.analysis_cost = metrics_after["cost"] - cost_before
+            self.analysis_tokens = metrics_after["total_tokens"] - tokens_before
 
-        self.save_events("scan_analysis")
+            self.log(f"Analysis completed in {duration:.1f}s")
+            self.log(f"Iterations: {iterations}/{self.config.manager_max_iterations}")
+            self.log(f"Cost: ${self.analysis_cost:.4f} ({self.analysis_tokens} tokens)")
 
-        analysis, analysis_logs = self.task.build_analysis_from_state()
-        if analysis:
-            self.analysis_result = analysis
-            for msg in analysis_logs:
-                self.log(msg)
+            self.save_events("scan_analysis")
+
+            analysis, analysis_logs = self.task.build_analysis_from_state()
+            if analysis:
+                self.analysis_result = analysis
+                for msg in analysis_logs:
+                    self.log(msg)
 
         self.output_logger.log_event(
             event_type="analysis_phase_complete",
@@ -366,8 +571,118 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
 
         return self.analysis_result
 
+    def _skill_based_delegate_tasks(self) -> None:
+        """
+        Step B of the skill-based manager refactor: use SkillRunner for a
+        focused single LLM call instead of the monolithic conversation chain.
+
+        Shrinks the delegation step from ~66K tokens to ~5-8K tokens by:
+        - Running repo-scan + dep-graph scripts (deterministic, already done)
+        - Calling task-decompose skill with compact JSON inputs
+        - No accumulated conversation history
+
+        Only used when ORCAID_USE_SKILLS=true env var is set.
+        """
+        from orcaid.skill_runner import SkillRunner
+
+        self.log("[skill-delegate] Using skill-based delegation (Step B)")
+        self.delegation_start_time = datetime.now()
+
+        # Get pre-scanned data from _run_pre_scan_scripts results
+        pass_data = getattr(self, "_pre_scan_pass_data", None)
+        dep_data = getattr(self, "_pre_scan_dep_data", None)
+
+        if not pass_data or not dep_data:
+            self.log("[skill-delegate] No pre-scan data, running scripts now...")
+            self._run_pre_scan_scripts()
+            pass_data = getattr(self, "_pre_scan_pass_data", None) or {}
+            dep_data = getattr(self, "_pre_scan_dep_data", None) or {}
+
+        pass_files = pass_data.get("files", [])
+        dep_graph = dep_data.get("graph", {})
+
+        if not pass_files:
+            self.log("[skill-delegate] No pass files found, using fallback")
+            self.delegation_plan = None
+            return
+
+        runner = SkillRunner(llm=self.llm, skills_root=Path(__file__).parent.parent / "skills")
+        try:
+            result = runner.run(
+                "task-decompose",
+                inputs={
+                    "pass_files": pass_files,
+                    "dep_graph": dep_graph,
+                    "max_agents": self.config.max_subagents,
+                },
+            )
+        except Exception as e:
+            self.log(f"[skill-delegate] SkillRunner failed: {e}, falling back")
+            self.delegation_plan = None
+            # Surface the partial cost even when the call failed mid-flight,
+            # so cost.json reflects spent tokens.
+            self.delegation_cost = runner.last_cost
+            self.delegation_tokens = runner.last_tokens
+            return
+
+        # Roll up SkillRunner cost/tokens into the manager's delegation budget
+        # so cost.json's manager.delegation block matches the legacy path's
+        # shape regardless of which retry policy is in use.
+        self.delegation_cost = runner.last_cost
+        self.delegation_tokens = runner.last_tokens
+
+        delegation_json = result
+        self.delegation_end_time = datetime.now()
+
+        # Build and save delegation plan (same as old path)
+        if not delegation_json:
+            self.log("[skill-delegate] No delegation JSON from skill, using fallback")
+            delegation_json = fallback_delegation(
+                self.analysis_result,
+                self.config.max_subagents,
+            ) or {"delegation_plan": {}}
+
+        self.delegation_plan = build_delegation_plan(delegation_json)
+        output_path = Path(self.config.output_dir) / "delegations.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(delegation_json, f, indent=2)
+        self.log(f"Delegation plan saved to: {output_path}")
+
+        # Log completion metrics — now includes cost & tokens for parity with
+        # the legacy delegate_tasks() event so the cost.json post-processor
+        # doesn't see zeros for skill-based runs.
+        duration = (self.delegation_end_time - self.delegation_start_time).total_seconds()
+        self.log(
+            f"Skill-based delegation complete in {duration:.1f}s "
+            f"(cost=${self.delegation_cost:.4f}, tokens={self.delegation_tokens})"
+        )
+
+        # Save a delegation_complete event for the output logger
+        self.output_logger.log_event(
+            event_type="delegation_complete",
+            source="manager",
+            start_time=self.delegation_start_time,
+            end_time=self.delegation_end_time,
+            content={
+                "num_agents": self.delegation_plan.num_agents if self.delegation_plan else 0,
+                "first_round": 0,
+                "remaining": 0,
+                "reasoning": "skill-based delegation (Step B)",
+                "max_iterations": self.config.max_subagents,
+                "actual_iterations": 1,
+                "duration": duration,
+                "cost": self.delegation_cost,
+                "tokens": self.delegation_tokens,
+            },
+        )
+
     def delegate_tasks(self) -> None:
         """Create a delegation plan and split the work between subagents."""
+        # Check env var for Step B skill-based path
+        if os.getenv("ORCAID_USE_SKILLS") == "true":
+            return self._skill_based_delegate_tasks()
+
         self.log("Starting task delegation...")
         self.delegation_start_time = datetime.now()
 
