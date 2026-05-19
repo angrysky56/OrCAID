@@ -105,6 +105,7 @@ async def run_workflow_inner(
             host_port=None,
             platform="linux/amd64",
             detach_logs=False,
+            volumes=workspace_config.get("volumes", []),
         )
     else:
         workspace_ctx = DockerWorkspace(
@@ -112,6 +113,7 @@ async def run_workflow_inner(
             host_port=None,
             platform=detect_platform(),
             detach_logs=False,
+            volumes=workspace_config.get("volumes", []),
         )
 
     os.chdir(original_cwd)

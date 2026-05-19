@@ -41,12 +41,18 @@ class SelfImproveTask(TaskModule):
         return "python:3.12-slim"
 
     def get_work_dir(self):
+        # Always return container-side workspace path
+        return "/workspace/orcaid_workspace"
+
+    def get_host_work_dir(self):
+        # Resolve path to home directory on the host
         return str(Path.home() / "orcaid_workspace")
 
     def get_workspace_config(self):
         return {
             "base_image": self.get_docker_image(),
             "target": "source-minimal",
+            "volumes": [f"{self.get_host_work_dir()}:/workspace/orcaid_workspace"],
         }
 
     def load_task_data(self):
@@ -60,7 +66,7 @@ class SelfImproveTask(TaskModule):
     def setup_workspace(self, workspace):
         """Copy OrCAID repo to workspace directory."""
         src = self.config.repo_path
-        dst = self.get_work_dir()
+        dst = self.get_host_work_dir()
 
         if not os.path.exists(src):
             raise RuntimeError(f"Source repo not found: {src}")
@@ -86,6 +92,7 @@ class SelfImproveTask(TaskModule):
             dict with success status, files_modified, and syntax_errors
         """
         work_dir = self.get_work_dir()
+        host_work_dir = self.get_host_work_dir()
 
         # Get all modified Python files via git
         print(f"\n{'=' * 60}")
@@ -125,9 +132,9 @@ class SelfImproveTask(TaskModule):
         valid_files = []
 
         for filepath in py_files:
-            full_path = os.path.join(work_dir, filepath)
+            full_path = os.path.join(host_work_dir, filepath)
             if not os.path.exists(full_path):
-                print(f"[SelfImprove] Warning: file not found: {filepath}")
+                print(f"[SelfImprove] Warning: file not found on host: {filepath}")
                 continue
 
             try:
