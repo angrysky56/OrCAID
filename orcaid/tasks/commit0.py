@@ -22,14 +22,25 @@ class Commit0Task(TaskModule):
         self.config = config
         self.task_data = None
 
+    def _get_clean_repo_name(self):
+        # Extract repo name from full path/URL and strip any trailing .git
+        name = self.config.repo_name.split("/")[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        return name
+
     def get_docker_image(self):
         if self.config.docker_image:
             return self.config.docker_image
+        # If repo_name contains a slash, it's a custom/personal repository, use default python
+        if "/" in self.config.repo_name:
+            return "python:3.12-slim"
         prefix = self.config.docker_image_prefix.rstrip("/")
         return f"{prefix}/{self.config.repo_name}:v0".lower()
 
     def get_work_dir(self):
-        return f"/workspace/{self.config.repo_name}_repo"
+        clean_name = self._get_clean_repo_name()
+        return f"/workspace/{clean_name}_repo"
 
     def get_workspace_config(self):
         return {
@@ -57,16 +68,24 @@ class Commit0Task(TaskModule):
 
         work_dir = self.get_work_dir()
         repo = self.task_data["repo"]
+        clean_name = self._get_clean_repo_name()
 
         # Step 1: Clone Repository
         print("\n" + "-" * 60)
         print("Step 1: Clone Repository")
         print("-" * 60)
         print(f"[Commit0] Cloning {repo}...")
+        
+        repo_url = repo
+        if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
+            repo_url = f"https://github.com/{repo}"
+            if not repo_url.endswith(".git"):
+                repo_url += ".git"
+                
         clone_cmd = (
             f"cd /workspace && "
             f"git clone --depth 1 -b {self.config.base_branch} "
-            f"https://github.com/{repo}.git {self.config.repo_name}_repo"
+            f"{repo_url} {clean_name}_repo"
         )
         result = workspace.execute_command(clone_cmd, timeout=600)
         if result.exit_code != 0:
@@ -82,9 +101,9 @@ class Commit0Task(TaskModule):
         print("\n" + "-" * 60)
         print("Step 2: Setup Repository")
         print("-" * 60)
-        print(f"[Commit0] Installing {self.config.repo_name} in dev mode...")
+        print(f"[Commit0] Installing {clean_name} in dev mode...")
         workspace.execute_command(
-            f"python -m pip uninstall -y {self.config.repo_name} 2>&1 | tail -3",
+            f"python -m pip uninstall -y {clean_name} {clean_name.lower()} 2>&1 | tail -3",
             timeout=60,
         )
         result = workspace.execute_command(
@@ -96,8 +115,8 @@ class Commit0Task(TaskModule):
         # Verify package import
         verify_cmd = (
             f"cd {work_dir} && "
-            f"python -c 'import {self.config.repo_name}; "
-            f'print("{self.config.repo_name} imported successfully")\''
+            f"python -c 'import {clean_name}; print(\"{clean_name} imported successfully\")' 2>/dev/null || "
+            f"python -c 'import {clean_name.lower()}; print(\"{clean_name.lower()} imported successfully\")'"
         )
         verify_result = workspace.execute_command(verify_cmd, timeout=30)
         if verify_result.exit_code == 0:
@@ -252,7 +271,8 @@ class Commit0Task(TaskModule):
         return subagent, combine_log
 
     def get_worktree_name(self, engineer_id):
-        return f"{self.config.repo_name}_worktree_{engineer_id}"
+        clean_name = self._get_clean_repo_name()
+        return f"{clean_name}_worktree_{engineer_id}"
 
     def get_subagent_log_lines(self, subagent):
         lines = [f"      Task: {subagent.file_path}"]
@@ -434,9 +454,9 @@ class Commit0Task(TaskModule):
         return lines
 
     def get_onboard_names(self, engineer_id):
-        repo_name = self.config.repo_name
+        clean_name = self._get_clean_repo_name()
         branch_name = f"agent_{engineer_id}"
-        worktree_name = f"{repo_name}_worktree_{engineer_id}"
+        worktree_name = f"{clean_name}_worktree_{engineer_id}"
         return branch_name, worktree_name
 
     def post_onboard_subagent(self, subagent, repo_dir):
