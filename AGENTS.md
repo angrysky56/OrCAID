@@ -12,6 +12,7 @@
 The Manager acts as the orchestrator and does **not** write code directly. Instead, it coordinates task flow, delegates sub-tasks, manages git integration, and reviews completed work.
 
 #### Core Workflow Methods:
+
 1. `scan_and_analyze()` — Scans the source repository and calls the LLM to generate a structured task decomposition (Task Graph).
 2. `delegate_tasks()` — Plans dependencies, allocates leaf tasks to Engineer subagents, and schedules execution.
 3. `onboard_subagents()` — Prepares the isolated git worktree environment for each subagent.
@@ -20,7 +21,8 @@ The Manager acts as the orchestrator and does **not** write code directly. Inste
 6. `final_review_all()` — Conducts a high-level review of all merged and unmerged outcomes to compile the final patch.
 
 #### Key Self-Healing Hook:
-* `_verify_and_return()` (located in `orcaid/core/manager_review.py`) — Wires directly into the **Verification Bridge** to score completed subagent work against checklists, write outcomes to persistent memory, and dynamically trigger auto-retries on criteria drift.
+
+- `_verify_and_return()` (located in `orcaid/core/manager_review.py`) — Wires directly into the **Verification Bridge** to score completed subagent work against checklists, write outcomes to persistent memory, and dynamically trigger auto-retries on criteria drift.
 
 ---
 
@@ -29,16 +31,17 @@ The Manager acts as the orchestrator and does **not** write code directly. Inste
 Engineer Subagents are worker instances managed by `SubAgentRunner` (in `orcaid/core/subagent.py`) that perform the actual codebase edits.
 
 #### Core Characteristics:
-* **Isolation**: Each engineer runs in a completely isolated git worktree with its own dedicated branch.
-* **Hermes Profile Mapping**:
-  * `engineer_1` ➔ `coder`
-  * `engineer_2` ➔ `coder`
-  * `engineer_3` ➔ `researcher`
-  * `engineer_4` ➔ `reviewer`
-* **Task Specialization**:
-  * `commit0`: Fills missing code stubs and satisfies package/unit tests.
-  * `paperbench`: Reproduces scientific ML research paper experiments.
-  * `self_improve`: Automatically refactors and improves placeholders in the OrCAID framework.
+
+- **Isolation**: Each engineer runs in a completely isolated git worktree with its own dedicated branch.
+- **Hermes Profile Mapping**:
+  - `engineer_1` ➔ `coder`
+  - `engineer_2` ➔ `coder`
+  - `engineer_3` ➔ `researcher`
+  - `engineer_4` ➔ `reviewer`
+- **Task Specialization**:
+  - `commit0`: Fills missing code stubs and satisfies package/unit tests.
+  - `paperbench`: Reproduces scientific ML research paper experiments.
+  - `self_improve`: Automatically refactors and improves placeholders in the OrCAID framework.
 
 ---
 
@@ -48,16 +51,17 @@ An intelligent, non-agent hook layer implemented in `orcaid/bridge.py` that conn
 
 #### Three Core Hook Points:
 
-| Hook Point | Invocation Spot | Primary Responsibility |
-|:---|:---|:---|
-| `verify_subagent_completion()` | Inside `_verify_and_return()` | Scores `SubAgentResult` against checklists, detects logical drift, schedules retries, or triggers escalations. |
-| `discovery_scan_for_orcaid()` | Before `scan_and_analyze()` | Reads historic failures and gaps from `discovery.yaml` and injects them back into the Manager's planning context. |
-| `synthesize_orcaid_outcome()` | Inside `final_review_all()` | Synthesizes overall performance, generates compound skills, and records final verified output. |
+| Hook Point                     | Invocation Spot               | Primary Responsibility                                                                                            |
+| :----------------------------- | :---------------------------- | :---------------------------------------------------------------------------------------------------------------- |
+| `verify_subagent_completion()` | Inside `_verify_and_return()` | Scores `SubAgentResult` against checklists, detects logical drift, schedules retries, or triggers escalations.    |
+| `discovery_scan_for_orcaid()`  | Before `scan_and_analyze()`   | Reads historic failures and gaps from `discovery.yaml` and injects them back into the Manager's planning context. |
+| `synthesize_orcaid_outcome()`  | Inside `final_review_all()`   | Synthesizes overall performance, generates compound skills, and records final verified output.                    |
 
 #### Advanced Features:
-* **Three-Bond Drift Classification**: Incorporates `orcaid.bond_classifier` to group failures into semantic structural gaps (e.g. missing package bindings, logic mismatch, verification failures).
-* **Graceful Degradation**: If the bridge module or dependencies are absent, `_verify_and_return()` logs a warning and returns the default result without interrupting execution.
-* **Persistent Memory**: Storage resides at `~/.hermes/` (overrideable via `ORCHESTRATOR_MEMORY_BASE` and `ORCAID_BRIDGE_STORAGE` env vars).
+
+- **Three-Bond Drift Classification**: Incorporates `orcaid.bond_classifier` to group failures into semantic structural gaps (e.g. missing package bindings, logic mismatch, verification failures).
+- **Graceful Degradation**: If the bridge module or dependencies are absent, `_verify_and_return()` logs a warning and returns the default result without interrupting execution.
+- **Persistent Memory**: Storage resides at `~/.hermes/` (overrideable via `ORCHESTRATOR_MEMORY_BASE` and `ORCAID_BRIDGE_STORAGE` env vars).
 
 ---
 
@@ -66,7 +70,7 @@ An intelligent, non-agent hook layer implemented in `orcaid/bridge.py` that conn
 ```
 [User/Cli] ➔ OrCAID CLI (orcaid.cli)
     ➔ Manager.__init__()
-    ➔ Manager.run() 
+    ➔ Manager.run()
         ➔ scan_and_analyze()             [LLM creates Task Graph]
           ➔ discovery_scan_for_orcaid()   [Injects prior failure gap context]
         ➔ delegation_plan               [Calculates task dependencies and weights]
@@ -87,6 +91,7 @@ An intelligent, non-agent hook layer implemented in `orcaid/bridge.py` that conn
 ## Self-Healing Loop & Memory System
 
 ### The "Higher-Level User" Philosophy:
+
 Lower-level delegation relies on telling agents exactly what to do step-by-step. OrCAID implements **higher-level pattern-based delegation**: the system actively observes failure patterns, learns from criteria drifts, and injects correction context autonomously without manual intervention.
 
 ```
@@ -99,6 +104,7 @@ SubAgent Completes ➔ _verify_and_return() fires
 ```
 
 ### Orchestrator Memory Map:
+
 ```
 ~/.hermes/orchestrator-memory/
 ├── verified/         # Successfully completed and verified tasks
@@ -113,17 +119,21 @@ SubAgent Completes ➔ _verify_and_return() fires
 ## Technical Specifications
 
 ### 1. Checklist Scoring
+
 Checklists are loaded dynamically from `orcaid/checklists/` as structured YAML configurations:
-* `checklist_code_review.yaml` — Validates structural code correctness, imports, tests, and syntax.
-* `checklist_research_reproduction.yaml` — Validates ML experiment requirements, metrics, and figures.
+
+- `checklist_code_review.yaml` — Validates structural code correctness, imports, tests, and syntax.
+- `checklist_research_reproduction.yaml` — Validates ML experiment requirements, metrics, and figures.
 
 ### 2. SubAgentResult Key Verification Fields
+
 Located in `orcaid/config.py`:
-* `success` (`bool`): Direct status of subagent's execution loop.
-* `commit_hash` (`str`): Git commit ID generated by the subagent.
-* `files_modified` (`list[str]`): List of paths modified by the worker.
-* `git_diff` (`str`): The raw diff representing the subagent's contributions.
-* `error` (`str`): Captured exception trace or test failure logs.
+
+- `success` (`bool`): Direct status of subagent's execution loop.
+- `commit_hash` (`str`): Git commit ID generated by the subagent.
+- `files_modified` (`list[str]`): List of paths modified by the worker.
+- `git_diff` (`str`): The raw diff representing the subagent's contributions.
+- `error` (`str`): Captured exception trace or test failure logs.
 
 ---
 
