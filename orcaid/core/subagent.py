@@ -199,7 +199,9 @@ class SubAgentRunner:
                 prompt = self.build_followup_prompt()
 
             max_retries = 3
-            iteration_before = count_llm_iterations(self.conversation.state.events)
+            iteration_before = count_llm_iterations(
+                self.conversation.state.events  # pylint: disable=no-member
+            )
 
             metrics_before = extract_conversation_metrics(self.conversation)
             cost_before = metrics_before["cost"]
@@ -278,12 +280,17 @@ class SubAgentRunner:
             )
             result.total_tokens = result.prompt_tokens + result.completion_tokens
             result.actual_iterations = (
-                count_llm_iterations(self.conversation.state.events) - iteration_before
+                count_llm_iterations(
+                    self.conversation.state.events  # pylint: disable=no-member
+                )
+                - iteration_before
             )
             result.max_iterations = self.max_iterations
 
             if self.output_logger:
-                events = list(self.conversation.state.events)
+                events = list(
+                    self.conversation.state.events  # pylint: disable=no-member
+                )
                 engineer_id = self.subagent.engineer_id
                 new_events_start = self.last_saved_event_count
                 new_events_count = len(events) - new_events_start
