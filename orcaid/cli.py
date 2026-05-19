@@ -199,9 +199,11 @@ async def run_workflow_inner(
                     # Save final repo state as tarball
                     print("\n[Tarball] Saving final repo state...")
                     repo_name = task_module.config.repo_name
-                    tarball_name = f"{repo_name}_repo.tar.gz"
+                    work_dir_name = Path(task_module.get_work_dir()).name
+                    # Avoid slashes or special characters in the temporary tarball name on the container
+                    tarball_name = f"{work_dir_name}.tar.gz"
                     tarball_cmd = (
-                        f"cd /workspace && tar -czf {tarball_name} {repo_name}_repo"
+                        f"cd /workspace && tar -czf {tarball_name} {work_dir_name}"
                     )
                     tar_result = workspace.execute_command(tarball_cmd, timeout=300)
                     if (
@@ -635,9 +637,11 @@ async def run_workflow_inner(
                 # Save final repo state as tarball
                 print("\n[Tarball] Saving final repo state...")
                 repo_name = task_module.config.repo_name
-                tarball_name = f"{repo_name}_repo.tar.gz"
+                work_dir_name = Path(task_module.get_work_dir()).name
+                # Avoid slashes or special characters in the temporary tarball name on the container
+                tarball_name = f"{work_dir_name}.tar.gz"
                 tarball_cmd = (
-                    f"cd /workspace && tar -czf {tarball_name} {repo_name}_repo"
+                    f"cd /workspace && tar -czf {tarball_name} {work_dir_name}"
                 )
                 tar_result = workspace.execute_command(tarball_cmd, timeout=300)
                 if tar_result is not None and getattr(tar_result, "exit_code", -1) == 0:
