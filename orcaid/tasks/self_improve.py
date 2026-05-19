@@ -76,12 +76,34 @@ class SelfImproveTask(TaskModule):
         print(f"{'=' * 60}")
         print(f"[SelfImprove] Copying {src} -> {dst}")
 
-        # Remove existing destination if present
+        # Clean existing destination contents if present without deleting the directory itself
         if os.path.exists(dst):
-            shutil.rmtree(dst)
+            for item in os.listdir(dst):
+                item_path = os.path.join(dst, item)
+                try:
+                    if os.path.isdir(item_path) and not os.path.islink(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.unlink(item_path)
+                except Exception as e:
+                    print(f"[SelfImprove] Warning: failed to clean {item_path}: {e}")
+        else:
+            os.makedirs(dst, exist_ok=True)
 
-        # Copy directory recursively
-        shutil.copytree(src, dst, symlinks=True)
+        # Copy contents from src to dst
+        for item in os.listdir(src):
+            if item == ".venv" or item == ".git" or item == ".planning":
+                # Skip massive env/meta dirs if we want, or copy them.
+                # Actually, copying .git is required for subagents to make git commits!
+                # But copying .venv takes forever and is not needed in the container.
+                if item == ".venv":
+                    continue
+            s = os.path.join(src, item)
+            d = os.path.join(dst, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d, symlinks=True)
+            else:
+                shutil.copy2(s, d)
         print("[SelfImprove] Workspace setup complete")
 
     def evaluate(self, workspace) -> dict:

@@ -32,6 +32,11 @@ def run(
     log_dir=None,
     data_dir=None,
 ):
+    if judge_model == "azure_ai/gpt-5-mini":
+        env_model = os.environ.get("LLM_MODEL") or os.environ.get("MODEL")
+        if env_model:
+            judge_model = env_model
+
     os.environ["PAPERBENCH_DATA_DIR"] = data_dir or os.environ.get(
         "PAPERBENCH_DATA_DIR", DEFAULT_DATA_DIR
     )

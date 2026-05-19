@@ -15,7 +15,7 @@ from openhands.sdk import LLM
 from openhands.workspace import DockerDevWorkspace, DockerWorkspace
 
 # Load .env from the project root (if present). Real env vars take precedence.
-load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent / ".env", override=True)
 
 
 from orcaid.config import WorkflowConfig
