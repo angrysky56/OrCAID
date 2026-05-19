@@ -11,7 +11,7 @@ from .base import TaskModule
 @dataclass
 class Commit0Config:
     repo_name: str = "minitorch"
-    base_branch: str = "main"
+    base_branch: str = ""  # Empty = auto-detect repo's default branch (pass explicitly to force e.g. "main" or "master")
     docker_image_prefix: str = "docker.io/wentingzhao/"
     docker_image: str = (
         ""  # Override docker image directly (e.g., "docker.io/wentingzhao/minitorch:v0")
@@ -86,6 +86,56 @@ class Commit0Task(TaskModule):
         }
         return self.task_data
 
+    def _detect_default_branch(self, repo: str) -> str:
+        """Query the GitHub API to find the repo's actual default branch.
+
+        Falls back to 'main' if the API call fails (no auth, rate-limit, etc.).
+        Only queries github.com repos; non-GitHub repos return 'main'.
+
+        Args:
+            repo: Full repo path in 'owner/name' format.
+
+        Returns:
+            The default branch name string (e.g. 'main' or 'master').
+        """
+        import urllib.request
+
+        if "/" not in repo:
+            return "main"
+
+        parts = repo.split("/")
+        owner, name = parts[-2], parts[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+
+        api_url = f"https://api.github.com/repos/{owner}/{name}"
+        try:
+            req = urllib.request.Request(
+                api_url,
+                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "OrCAID/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                branch = data.get("default_branch", "main")
+                print(f"[Commit0] Detected default branch: '{branch}' for {owner}/{name}")
+                return branch
+        except Exception as exc:
+            print(f"[Commit0] Warning: could not detect default branch ({exc}), falling back to 'main'")
+            return "main"
+
+    def _resolve_base_branch(self, repo: str) -> str:
+        """Return the branch to clone: explicit config value or auto-detected default.
+
+        Args:
+            repo: Full 'owner/name' repo path used when auto-detecting.
+
+        Returns:
+            Branch name to pass to git clone -b.
+        """
+        if self.config.base_branch:
+            return self.config.base_branch
+        return self._detect_default_branch(repo)
+
     def setup_workspace(self, workspace):
         if self.task_data is None:
             raise RuntimeError("Call load_task_data() before setup_workspace()")
@@ -106,9 +156,12 @@ class Commit0Task(TaskModule):
             if not repo_url.endswith(".git"):
                 repo_url += ".git"
 
+        base_branch = self._resolve_base_branch(repo)
+        print(f"[Commit0] Using branch: '{base_branch}'")
+
         clone_cmd = (
             f"cd /workspace && "
-            f"git clone --depth 1 -b {self.config.base_branch} "
+            f"git clone --depth 1 -b {base_branch} "
             f"{repo_url} {clean_name}_repo"
         )
         result = workspace.execute_command(clone_cmd, timeout=600)

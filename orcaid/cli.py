@@ -963,15 +963,33 @@ def main(  # noqa: PLR0913
     max_iterations=50,
     max_subagents=4,
     sub_iterations=None,
+    max_rounds_chat=None,
     rounds_of_chat=2,
     subagent_model=None,
     output_dir=None,
     **kwargs,
 ):
-    """CLI entry point — configure and launch the OrCAID workflow."""
+    """CLI entry point — configure and launch the OrCAID workflow.
+
+    Args:
+        task: Task type ('commit0', 'paperbench', 'self_improve').
+        model: LiteLLM model identifier (e.g. 'minimax/MiniMax-M2.7').
+        multi_agent: Run in multi-agent delegation mode (default True).
+        max_iterations: Max LLM iterations for the Manager agent.
+        max_subagents: Maximum number of parallel subagent engineers.
+        sub_iterations: Max LLM iterations per subagent (default 50).
+        max_rounds_chat: Max task rounds per subagent. Alias for rounds_of_chat —
+            if both are provided, max_rounds_chat takes priority.
+        rounds_of_chat: Legacy alias for max_rounds_chat (default 2).
+        subagent_model: Optional separate model for subagents.
+        output_dir: Override the auto-generated output directory path.
+        **kwargs: Task-specific flags (e.g. --repo, --base_branch, --paper_id).
+    """
     model_name = model or os.getenv("LLM_MODEL", "litellm_proxy/neulab/gpt-5-mini")
     subagent_model_name = subagent_model or os.getenv("LLM_SUBAGENT_MODEL")
     subagent_iters = sub_iterations if sub_iterations is not None else 50
+    # max_rounds_chat takes priority over legacy rounds_of_chat
+    effective_rounds = max_rounds_chat if max_rounds_chat is not None else rounds_of_chat
 
     workflow_config = WorkflowConfig(
         model=model_name,
@@ -979,7 +997,7 @@ def main(  # noqa: PLR0913
         manager_max_iterations=max_iterations,
         max_subagents=max_subagents,
         subagent_max_iterations=subagent_iters,
-        max_rounds_chat=rounds_of_chat,
+        max_rounds_chat=effective_rounds,
     )
 
     task_module = build_task_module(task, **kwargs)

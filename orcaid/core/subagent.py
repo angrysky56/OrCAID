@@ -1,5 +1,15 @@
+"""SubAgent runner and parallel execution engine for OrCAID.
+
+This module provides:
+- ``SubAgentRunner``: wraps a single engineer subagent lifecycle (setup → run →
+  collect metrics → cleanup) inside a Docker workspace.
+- ``run_subagents_parallel``: async scheduler that starts, monitors, and
+  reassigns runners while the Manager coordinates task flow.
+"""
+
 import asyncio
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk import Agent, Conversation
 from openhands.tools.preset.default import get_default_tools
@@ -11,6 +21,10 @@ from orcaid.core.utils import (
     extract_conversation_metrics,
     serialize_event,
 )
+
+if TYPE_CHECKING:
+    from orcaid.config import SubAgent, SubAgentResult
+    from orcaid.tasks.base import TaskModule
 
 
 class SubAgentRunner:
@@ -43,13 +57,23 @@ class SubAgentRunner:
         self.last_result = None
         self.last_saved_event_count = 0
 
-    def log(self, message):
+    def log(self, message: str) -> None:
+        """Emit a prefixed log line tagged with this subagent's engineer_id."""
         print(f"[{self.subagent.engineer_id}] {message}")
 
-    def can_accept_more_tasks(self):
+    def can_accept_more_tasks(self) -> bool:
+        """Return True if this runner still has rounds of chat remaining."""
         return self.completed_rounds < self.max_rounds_chat
 
-    def update_task(self, new_subagent):
+    def update_task(self, new_subagent: "SubAgent") -> None:
+        """Reassign this runner to a new task without tearing down the workspace.
+
+        Called by the scheduler when an engineer finishes one task and is
+        immediately re-queued with a new one (multi-round mode).
+
+        Args:
+            new_subagent: The incoming SubAgent describing the next task.
+        """
         self.log(f"Updating task for round {new_subagent.current_round}")
         self.log(f"  - New task: {new_subagent.task_id}")
         if new_subagent.file_path:
@@ -58,7 +82,17 @@ class SubAgentRunner:
         self.result = None
         self.instruction_time = datetime.now()
 
-    def setup(self):
+    def setup(self) -> None:
+        """Initialise the Agent and Conversation objects for this runner.
+
+        Creates a fresh ``Agent`` with the default tool preset (browser
+        disabled) and a ``Conversation`` bound to the shared Docker workspace.
+        Safe to call again on retry (``should_setup_on_retry=True`` tasks).
+
+        Raises:
+            Exception: Propagates any error from the SDK constructors so the
+                caller can decide whether to retry or mark the subagent as failed.
+        """
         self.log("Setting up subagent...")
         tools = get_default_tools(enable_browser=False)
         self.agent = Agent(
@@ -251,18 +285,30 @@ class SubAgentRunner:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.run)
 
-    def get_commit_info(self):
+    def get_commit_info(self) -> dict[str, str]:
+        """Return the latest commit's short hash, subject, and author name.
+
+        Uses NUL-delimited git format (``%x00``) to safely handle commit
+        messages that contain ``|`` characters, which would break a
+        pipe-delimited split.
+
+        Returns:
+            dict with keys ``"hash"`` (8-char short), ``"message"``, ``"author"``.
+            All values are empty strings if the worktree has no commits or the
+            command fails.
+        """
         worktree_path = self.subagent.worktree_path or self.subagent.submission_path
         if not worktree_path:
             return {"hash": "", "message": "", "author": ""}
 
+        # NUL-delimited format avoids breakage when subject contains '|'
         cmd = (
             f"cd {worktree_path} && "
-            f"git log -1 --format='%H|%s|%an' 2>/dev/null || echo '||'"
+            r"git log -1 --format='%H%x00%s%x00%an' 2>/dev/null || printf '\x00\x00'"
         )
         result = self.workspace.execute_command(cmd, timeout=30)
         stdout = (result.stdout or "").strip()
-        parts = stdout.split("|", 2)
+        parts = stdout.split("\x00", 2)
         return {
             "hash": parts[0][:8] if len(parts) > 0 else "",
             "message": parts[1] if len(parts) > 1 else "",
@@ -373,6 +419,94 @@ class SubAgentRunner:
                 self.conversation.close()
             except Exception:
                 pass
+
+
+def _onboard_inactive_engineer(
+    target_engineer_id: str,
+    new_subagent: "SubAgent",
+    manager: Any,
+    task_module: "TaskModule",
+    template_runner: "SubAgentRunner",
+) -> "SubAgentRunner | None":
+    """Create a git worktree + SubAgentRunner for a brand-new engineer slot.
+
+    This helper centralises the ~40 lines of worktree-creation + runner-setup
+    that were previously duplicated in two separate code paths inside
+    ``run_subagents_parallel``.  Returns the ready ``SubAgentRunner`` on
+    success or ``None`` if the worktree could not be created (error already
+    printed).
+
+    Args:
+        target_engineer_id: e.g. ``"engineer_3"``.
+        new_subagent: The SubAgent object that will be assigned to this engineer.
+        manager: The running ``Manager`` instance (provides workspace, repo_dir,
+            delegation_plan, etc.).
+        task_module: Active task implementation (Commit0Task, etc.).
+        template_runner: An existing runner whose LLM, workspace, prompts, and
+            iteration settings are copied to the new runner.
+
+    Returns:
+        A fully set-up ``SubAgentRunner`` ready to accept
+        ``asyncio.create_task(run_single_runner(new_runner))``, or ``None``
+        on failure.
+    """
+    print(f"\n[SubAgents] Onboarding inactive engineer {target_engineer_id}...")
+
+    # Pin the worktree to the current HEAD of the main repo
+    cmd_result = manager.workspace.execute_command(
+        f"cd {manager.repo_dir} && git rev-parse HEAD", timeout=30
+    )
+    base_commit = cmd_result.stdout.strip() if cmd_result.exit_code == 0 else ""
+
+    branch_name, worktree_name = task_module.get_onboard_names(target_engineer_id)
+    worktree_path = f"/workspace/{worktree_name}"
+
+    # Create the branch (idempotent — suppresses error if it already exists)
+    branch_cmd = (
+        f"cd {manager.repo_dir} && "
+        f"git branch {branch_name} {base_commit} 2>/dev/null || true"
+    )
+    manager.workspace.execute_command(branch_cmd, timeout=30)
+
+    worktree_cmd = (
+        f"cd {manager.repo_dir} && "
+        f"git worktree add {worktree_path} {branch_name}"
+    )
+    worktree_result = manager.workspace.execute_command(worktree_cmd, timeout=60)
+
+    if worktree_result.exit_code != 0:
+        print(
+            f"[SubAgents] Failed to create worktree for {target_engineer_id}: "
+            f"{worktree_result.stderr}"
+        )
+        return None
+
+    new_subagent.branch_name = branch_name
+    new_subagent.worktree_path = worktree_path
+    new_subagent.base_commit = base_commit
+    task_module.post_onboard_subagent(new_subagent, manager.repo_dir)
+    new_subagent.current_round = 1
+
+    new_runner = SubAgentRunner(
+        llm=template_runner.llm,
+        workspace=template_runner.workspace,
+        subagent=new_subagent,
+        prompts=template_runner.prompts,
+        task_module=task_module,
+        max_iterations=template_runner.max_iterations,
+        max_rounds_chat=template_runner.max_rounds_chat,
+        output_dir=template_runner.output_dir,
+        output_logger=template_runner.output_logger,
+    )
+    new_runner.setup()
+
+    print(f"- Worktree: {worktree_path}")
+    print(f"- Branch:   {branch_name}")
+    print(f"- Task:     {new_subagent.task_id}")
+    for line in task_module.get_new_task_print_lines(new_subagent):
+        print(line)
+
+    return new_runner
 
 
 async def run_subagents_parallel(
@@ -507,75 +641,20 @@ async def run_subagents_parallel(
                     activated_any = True
 
                 elif target_engineer_id in inactive_engineer_ids:
-                    print(
-                        f"\n[SubAgents] Onboarding inactive engineer {target_engineer_id}..."
-                    )
-
-                    cmd_result = manager.workspace.execute_command(
-                        f"cd {manager.repo_dir} && git rev-parse HEAD", timeout=30
-                    )
-                    base_commit = (
-                        cmd_result.stdout.strip() if cmd_result.exit_code == 0 else ""
-                    )
-
-                    branch_name, worktree_name = task_module.get_onboard_names(
-                        target_engineer_id
-                    )
-                    worktree_path = f"/workspace/{worktree_name}"
-
-                    branch_cmd = (
-                        f"cd {manager.repo_dir} && "
-                        f"git branch {branch_name} {base_commit} 2>/dev/null || true"
-                    )
-                    manager.workspace.execute_command(branch_cmd, timeout=30)
-
-                    worktree_cmd = (
-                        f"cd {manager.repo_dir} && "
-                        f"git worktree add {worktree_path} {branch_name}"
-                    )
-                    worktree_result = manager.workspace.execute_command(
-                        worktree_cmd, timeout=60
-                    )
-
-                    if worktree_result.exit_code != 0:
-                        print(
-                            f"[SubAgents] Failed to create worktree for {target_engineer_id}: {worktree_result.stderr}"
-                        )
-                        continue
-
-                    new_subagent.branch_name = branch_name
-                    new_subagent.worktree_path = worktree_path
-                    new_subagent.base_commit = base_commit
-                    task_module.post_onboard_subagent(new_subagent, manager.repo_dir)
-                    new_subagent.current_round = 1
-
-                    template_runner = trigger_runner
-                    new_runner = SubAgentRunner(
-                        llm=template_runner.llm,
-                        workspace=template_runner.workspace,
-                        subagent=new_subagent,
-                        prompts=template_runner.prompts,
+                    new_runner = _onboard_inactive_engineer(
+                        target_engineer_id=target_engineer_id,
+                        new_subagent=new_subagent,
+                        manager=manager,
                         task_module=task_module,
-                        max_iterations=template_runner.max_iterations,
-                        max_rounds_chat=template_runner.max_rounds_chat,
-                        output_dir=template_runner.output_dir,
-                        output_logger=template_runner.output_logger,
+                        template_runner=trigger_runner,
                     )
-                    new_runner.setup()
-
-                    print(f"- Worktree: {worktree_path}")
-                    print(f"- Branch: {branch_name}")
-                    print(f"- Task: {new_subagent.task_id}")
-                    for line in task_module.get_new_task_print_lines(new_subagent):
-                        print(line)
-
+                    if new_runner is None:
+                        continue
                     new_task = asyncio.create_task(run_single_runner(new_runner))
                     tasks[new_task] = new_runner
                     active_engineer_ids.add(target_engineer_id)
                     activated_any = True
-                    print(
-                        f"[SubAgents] {target_engineer_id} onboarded and added to task pool"
-                    )
+                    print(f"[SubAgents] {target_engineer_id} onboarded and added to task pool")
 
             idle_runners = list(idle_runners_by_id.values())
 
@@ -802,77 +881,15 @@ async def run_subagents_parallel(
                                 )
 
                             elif target_engineer_id in inactive_engineer_ids:
-                                print(
-                                    f"\n[SubAgents] Onboarding inactive engineer {target_engineer_id}..."
-                                )
-
-                                cmd_result = manager.workspace.execute_command(
-                                    f"cd {manager.repo_dir} && git rev-parse HEAD",
-                                    timeout=30,
-                                )
-                                base_commit = (
-                                    cmd_result.stdout.strip()
-                                    if cmd_result.exit_code == 0
-                                    else ""
-                                )
-
-                                branch_name, worktree_name = (
-                                    task_module.get_onboard_names(target_engineer_id)
-                                )
-                                worktree_path = f"/workspace/{worktree_name}"
-
-                                branch_cmd = (
-                                    f"cd {manager.repo_dir} && "
-                                    f"git branch {branch_name} {base_commit} 2>/dev/null || true"
-                                )
-                                manager.workspace.execute_command(
-                                    branch_cmd, timeout=30
-                                )
-
-                                worktree_cmd = (
-                                    f"cd {manager.repo_dir} && "
-                                    f"git worktree add {worktree_path} {branch_name}"
-                                )
-                                worktree_result = manager.workspace.execute_command(
-                                    worktree_cmd, timeout=60
-                                )
-
-                                if worktree_result.exit_code != 0:
-                                    print(
-                                        f"[SubAgents] Failed to create worktree for {target_engineer_id}: {worktree_result.stderr}"
-                                    )
-                                    continue
-
-                                new_subagent.branch_name = branch_name
-                                new_subagent.worktree_path = worktree_path
-                                new_subagent.base_commit = base_commit
-                                task_module.post_onboard_subagent(
-                                    new_subagent, manager.repo_dir
-                                )
-                                new_subagent.current_round = 1
-
-                                template_runner = runner
-                                new_runner = SubAgentRunner(
-                                    llm=template_runner.llm,
-                                    workspace=template_runner.workspace,
-                                    subagent=new_subagent,
-                                    prompts=template_runner.prompts,
+                                new_runner = _onboard_inactive_engineer(
+                                    target_engineer_id=target_engineer_id,
+                                    new_subagent=new_subagent,
+                                    manager=manager,
                                     task_module=task_module,
-                                    max_iterations=template_runner.max_iterations,
-                                    max_rounds_chat=template_runner.max_rounds_chat,
-                                    output_dir=template_runner.output_dir,
-                                    output_logger=template_runner.output_logger,
+                                    template_runner=runner,
                                 )
-                                new_runner.setup()
-
-                                print(f"- Worktree: {worktree_path}")
-                                print(f"- Branch: {branch_name}")
-                                print(f"- Task: {new_subagent.task_id}")
-                                for line in task_module.get_new_task_print_lines(
-                                    new_subagent
-                                ):
-                                    print(line)
-
+                                if new_runner is None:
+                                    continue
                                 new_task = asyncio.create_task(
                                     run_single_runner(new_runner)
                                 )
