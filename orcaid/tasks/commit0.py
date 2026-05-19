@@ -32,11 +32,17 @@ class Commit0Task(TaskModule):
     def get_docker_image(self):
         if self.config.docker_image:
             return self.config.docker_image
-        # If repo_name contains a slash, it's a custom/personal repository, use default python
-        if "/" in self.config.repo_name:
-            return "python:3.12-slim"
-        prefix = self.config.docker_image_prefix.rstrip("/")
-        return f"{prefix}/{self.config.repo_name}:v0".lower()
+
+        repo_lower = self.config.repo_name.lower()
+
+        # If it is an official benchmark repository (starts with wentingzhao/ or doesn't contain /)
+        if repo_lower.startswith("wentingzhao/") or "/" not in self.config.repo_name:
+            clean_name = repo_lower.split("/")[-1]
+            prefix = self.config.docker_image_prefix.rstrip("/")
+            return f"{prefix}/{clean_name}:v0".lower()
+
+        # For custom/personal repositories, use python:3.12-slim
+        return "python:3.12-slim"
 
     def get_work_dir(self):
         clean_name = self._get_clean_repo_name()
@@ -64,8 +70,12 @@ class Commit0Task(TaskModule):
 
         # Dynamic dataset-free fallback for custom repositories
         print(f"[Commit0] Repository '{self.config.repo_name}' not found in dataset. Using dynamic dataset-free fallback.")
+        repo_name = self.config.repo_name
+        if "/" not in repo_name:
+            repo_name = f"wentingzhao/{repo_name}"
+
         self.task_data = {
-            "repo": self.config.repo_name,
+            "repo": repo_name,
             "test_cmd": "pytest",
             "test_dir": "tests/",
             "test": {
