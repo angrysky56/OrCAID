@@ -7,11 +7,15 @@ This module provides:
   reassigns runners while the Manager coordinates task flow.
 """
 
-import asyncio
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from __future__ import annotations
 
-from openhands.sdk import Agent, Conversation
+import asyncio
+import contextlib
+import time
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, cast
+
+from openhands.sdk import Agent, BaseConversation, Conversation
 from openhands.tools.preset.default import get_default_tools
 
 from orcaid.core.utils import (
@@ -24,17 +28,25 @@ from orcaid.core.utils import (
 
 if TYPE_CHECKING:
     from orcaid.config import SubAgent, SubAgentResult
+    from orcaid.core.manager import Manager
     from orcaid.tasks.base import TaskModule
 
 
 class SubAgentRunner:
+    """Manages the execution lifecycle of a single subagent.
+
+    This runner initializes the agent and its conversation in the Docker
+    workspace, sends prompts, executes the agent, collects token/cost metrics,
+    and returns a SubAgentResult representing the execution outcome.
+    """
+
     def __init__(
         self,
-        llm,
-        workspace,
-        subagent,
-        prompts,
-        task_module,
+        llm: Any,
+        workspace: Any,
+        subagent: SubAgent,
+        prompts: dict[str, str],
+        task_module: TaskModule,
         max_iterations=50,
         max_rounds_chat=2,
         output_dir=None,
@@ -50,11 +62,11 @@ class SubAgentRunner:
         self.output_dir = output_dir
         self.output_logger = output_logger
         self.agent = None
-        self.conversation = None
-        self.result = None
+        self.conversation: BaseConversation | None = None
+        self.result: SubAgentResult | None = None
         self.instruction_time = None
         self.completed_rounds = 0
-        self.last_result = None
+        self.last_result: SubAgentResult | None = None
         self.last_saved_event_count = 0
 
     def log(self, message: str) -> None:
@@ -100,22 +112,35 @@ class SubAgentRunner:
             tools=tools,
             system_prompt_kwargs={"cli_mode": True},
         )
-        self.conversation = Conversation(
-            agent=self.agent,
-            workspace=self.workspace,
-            max_iteration_per_run=self.max_iterations,
-            visualizer=PanelVisualizer(),
+        self.conversation = cast(
+            BaseConversation,
+            Conversation(
+                agent=self.agent,
+                workspace=self.workspace,
+                max_iteration_per_run=self.max_iterations,
+                visualizer=PanelVisualizer(),
+            ),
         )
         self.instruction_time = datetime.now()
         self.last_saved_event_count = 0
         self.log("Subagent ready")
 
-    def create_result(self):
+    def create_result(self) -> SubAgentResult:
+        """Create and initialize a SubAgentResult for the current task.
+
+        Returns:
+            The initialized SubAgentResult object.
+        """
         if self.result is None:
             self.result = self.task_module.create_subagent_result(self.subagent)
         return self.result
 
-    def build_first_round_prompt(self):
+    def build_first_round_prompt(self) -> str:
+        """Construct the prompt for the first round of the subagent's execution.
+
+        Returns:
+            The fully populated first round prompt string.
+        """
         return build_subagent_prompt(
             prompts=self.prompts,
             submission_path=self.subagent.worktree_path
@@ -132,14 +157,27 @@ class SubAgentRunner:
             test_dir=getattr(self.subagent, "test_dir", "tests/"),
         )
 
-    def build_followup_prompt(self):
+    def build_followup_prompt(self) -> str:
+        """Construct the prompt for follow-up rounds.
+
+        Returns:
+            The fully formatted follow-up instruction string.
+        """
         template = self.prompts.get("followup_prompt", "")
         args = self.task_module.get_followup_prompt_args(self.subagent)
         prompt = template.format(**args)
         self.log(f"Round {self.subagent.current_round}: Sending follow-up instruction")
         return prompt
 
-    def run(self):
+    def run(self) -> SubAgentResult:
+        """Execute the subagent's task synchronously.
+
+        This runs the agent through its iterations, handles retries, parses commit
+        outcomes, prints performance summaries, and saves event logs.
+
+        Returns:
+            The SubAgentResult containing execution metrics and outcome.
+        """
         result = self.create_result()
         start_time = datetime.now()
         result.start_time = start_time.isoformat()
@@ -176,7 +214,8 @@ class SubAgentRunner:
                             self.setup()
                         else:
                             self.log(
-                                f"Retry attempt {attempt + 1}/{max_retries}, resuming conversation..."
+                                f"Retry attempt {attempt + 1}/{max_retries}, "
+                                "resuming conversation..."
                             )
 
                     if self.task_module.should_resend_on_retry or attempt == 0:
@@ -195,8 +234,6 @@ class SubAgentRunner:
                     if any(msg in error_str for msg in retryable_errors):
                         self.log(f"Transient LLM error: {error_str[:150]}")
                         if attempt < max_retries - 1:
-                            import time
-
                             time.sleep(2**attempt)
                             continue
                     raise
@@ -208,7 +245,10 @@ class SubAgentRunner:
 
             if current_hash and base_short and current_hash == base_short:
                 result.success = False
-                result.error = "No new commit was made. Agent may have run out of iterations before committing."
+                result.error = (
+                    "No new commit was made. Agent may have run out of "
+                    "iterations before committing."
+                )
                 result.commit_hash = ""
                 self.task_module.populate_no_commit_result(result)
                 result.files_modified = []
@@ -248,7 +288,8 @@ class SubAgentRunner:
                 new_events_start = self.last_saved_event_count
                 new_events_count = len(events) - new_events_start
                 self.log(
-                    f"Saving {new_events_count} new events (starting from {new_events_start}) to {engineer_id}_events.jsonl..."
+                    f"Saving {new_events_count} new events (starting from "
+                    f"{new_events_start}) to {engineer_id}_events.jsonl..."
                 )
                 for idx in range(new_events_start, len(events)):
                     event = events[idx]
@@ -281,7 +322,12 @@ class SubAgentRunner:
 
         return result
 
-    async def run_async(self):
+    async def run_async(self) -> SubAgentResult:
+        """Asynchronously execute the runner in a separate thread.
+
+        Returns:
+            The SubAgentResult containing execution metrics and outcome.
+        """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.run)
 
@@ -315,7 +361,12 @@ class SubAgentRunner:
             "author": parts[2] if len(parts) > 2 else "",
         }
 
-    def get_git_diff(self):
+    def get_git_diff(self) -> str:
+        """Retrieve the git diff representing the changes made by this subagent.
+
+        Returns:
+            The git diff string, or an empty string if no diff could be generated.
+        """
         worktree_path = self.subagent.worktree_path or self.subagent.submission_path
         base_commit = self.subagent.base_commit
 
@@ -336,7 +387,12 @@ class SubAgentRunner:
         result = self.workspace.execute_command(cmd, timeout=120)
         return result.stdout.strip() if result.exit_code == 0 else ""
 
-    def get_modified_files(self):
+    def get_modified_files(self) -> list[str]:
+        """Get the list of file paths modified by this subagent.
+
+        Returns:
+            A list of modified file paths relative to the worktree root.
+        """
         worktree_path = self.subagent.worktree_path or self.subagent.submission_path
         base_commit = self.subagent.base_commit
 
@@ -360,7 +416,7 @@ class SubAgentRunner:
             return [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
         return []
 
-    def get_commit_count(self):
+    def get_commit_count(self) -> int:
         """Count commits since base (paperbench-specific)."""
         worktree_path = self.subagent.worktree_path or self.subagent.submission_path
         base_commit = self.subagent.base_commit
@@ -369,9 +425,15 @@ class SubAgentRunner:
             return 0
 
         if base_commit:
-            cmd = f"cd {worktree_path} && git rev-list --count {base_commit}..HEAD 2>/dev/null || echo '0'"
+            cmd = (
+                f"cd {worktree_path} && "
+                f"git rev-list --count {base_commit}..HEAD 2>/dev/null || echo '0'"
+            )
         else:
-            cmd = f"cd {worktree_path} && git rev-list --count HEAD 2>/dev/null || echo '0'"
+            cmd = (
+                f"cd {worktree_path} && "
+                f"git rev-list --count HEAD 2>/dev/null || echo '0'"
+            )
 
         result = self.workspace.execute_command(cmd, timeout=30)
         try:
@@ -379,7 +441,7 @@ class SubAgentRunner:
         except ValueError:
             return 0
 
-    def check_submission_exists(self):
+    def check_submission_exists(self) -> bool:
         """Check if submission directory has content (paperbench-specific)."""
         worktree_path = self.subagent.worktree_path or self.subagent.submission_path
         if not worktree_path:
@@ -388,7 +450,7 @@ class SubAgentRunner:
         result = self.workspace.execute_command(cmd, timeout=30)
         return result.exit_code == 0 and result.stdout.strip() != ""
 
-    def check_reproduce_script_exists(self):
+    def check_reproduce_script_exists(self) -> bool:
         """Check if reproduce.sh exists (paperbench-specific)."""
         worktree_path = self.subagent.worktree_path or self.subagent.submission_path
         if not worktree_path:
@@ -397,7 +459,15 @@ class SubAgentRunner:
         result = self.workspace.execute_command(cmd, timeout=30)
         return "exists" in result.stdout
 
-    def print_summary(self, result, commit_info):
+    def print_summary(
+        self, result: SubAgentResult, commit_info: dict[str, str]
+    ) -> None:
+        """Print a summary of the commit and run status to the console.
+
+        Args:
+            result: The completed SubAgentResult.
+            commit_info: Dictionary containing 'hash', 'message', and 'author'.
+        """
         self.log("=" * 60)
         self.log("Commit Summary")
         self.log("=" * 60)
@@ -413,21 +483,20 @@ class SubAgentRunner:
 
         self.log("=" * 60)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
+        """Clean up the subagent runner and close active conversations."""
         if self.conversation:
-            try:
+            with contextlib.suppress(Exception):
                 self.conversation.close()
-            except Exception:
-                pass
 
 
 def _onboard_inactive_engineer(
     target_engineer_id: str,
-    new_subagent: "SubAgent",
-    manager: Any,
-    task_module: "TaskModule",
-    template_runner: "SubAgentRunner",
-) -> "SubAgentRunner | None":
+    new_subagent: SubAgent,
+    manager: Manager,
+    task_module: TaskModule,
+    template_runner: SubAgentRunner,
+) -> SubAgentRunner | None:
     """Create a git worktree + SubAgentRunner for a brand-new engineer slot.
 
     This helper centralises the ~40 lines of worktree-creation + runner-setup
@@ -469,8 +538,7 @@ def _onboard_inactive_engineer(
     manager.workspace.execute_command(branch_cmd, timeout=30)
 
     worktree_cmd = (
-        f"cd {manager.repo_dir} && "
-        f"git worktree add {worktree_path} {branch_name}"
+        f"cd {manager.repo_dir} && " f"git worktree add {worktree_path} {branch_name}"
     )
     worktree_result = manager.workspace.execute_command(worktree_cmd, timeout=60)
 
@@ -510,13 +578,30 @@ def _onboard_inactive_engineer(
 
 
 async def run_subagents_parallel(
-    runners,
-    manager=None,
-    task_module=None,
-    output_logger=None,
-    enable_background_exploration=True,
-    max_subagents=4,
-):
+    runners: list[SubAgentRunner],
+    manager: Manager | None = None,
+    task_module: TaskModule | None = None,
+    output_logger: Any | None = None,
+    enable_background_exploration: bool = True,
+    max_subagents: int = 4,
+) -> list[SubAgentResult]:
+    """Execute multiple subagents in parallel with dynamic task assignment.
+
+    This functions schedules subagents, monitors execution in parallel, handles
+    re-assigning subagents upon task completion, manages merge conflicts, and
+    performs background exploration for discovery.
+
+    Args:
+        runners: List of active SubAgentRunner instances.
+        manager: Running Manager instance (provides task orchestration).
+        task_module: Active TaskModule for execution callbacks.
+        output_logger: Event logger for tracing conversation steps.
+        enable_background_exploration: Flag to trigger background search tasks.
+        max_subagents: Maximum capacity of concurrent subagents.
+
+    Returns:
+        A list of completed SubAgentResult instances representing final outcomes.
+    """
     if not runners:
         print("[SubAgents] No subagents to run.")
         return []
@@ -561,7 +646,7 @@ async def run_subagents_parallel(
 
     def get_running_agents_summary():
         running_info = []
-        for task, runner in tasks.items():
+        for runner in tasks.values():
             engineer_id = runner.subagent.engineer_id
             file_path = runner.subagent.file_path
             funcs = runner.subagent.functions_to_implement[:3]
@@ -628,7 +713,8 @@ async def run_subagents_parallel(
                     task_module.prepare_reuse_subagent(new_subagent, target_runner)
 
                     print(
-                        f"\n[SubAgents] Activating idle {target_engineer_id} with new task (round {new_subagent.current_round})"
+                        f"\n[SubAgents] Activating idle {target_engineer_id} with new "
+                        f"task (round {new_subagent.current_round})"
                     )
                     print(f"- New task: {new_subagent.task_id}")
                     for line in task_module.get_new_task_print_lines(new_subagent):
@@ -654,13 +740,16 @@ async def run_subagents_parallel(
                     tasks[new_task] = new_runner
                     active_engineer_ids.add(target_engineer_id)
                     activated_any = True
-                    print(f"[SubAgents] {target_engineer_id} onboarded and added to task pool")
+                    print(
+                        f"[SubAgents] {target_engineer_id} onboarded and added to task pool"
+                    )
 
             idle_runners = list(idle_runners_by_id.values())
 
             if not activated_any and not tasks:
                 print(
-                    f"[SubAgents] No more tasks can be assigned. {len(idle_runners)} agents remain idle."
+                    f"[SubAgents] No more tasks can be assigned. "
+                    f"{len(idle_runners)} agents remain idle."
                 )
                 break
 
@@ -753,7 +842,8 @@ async def run_subagents_parallel(
                     if result.merge_method == "conflict" and conflict_files:
                         if runner.can_accept_more_tasks():
                             print(
-                                f"\n[SubAgents] {engineer_id} has merge conflict - assigning conflict resolution task"
+                                f"\n[SubAgents] {engineer_id} has merge conflict - "
+                                "assigning conflict resolution task"
                             )
                             print(f"- Conflict files: {', '.join(conflict_files)}")
 
@@ -783,7 +873,8 @@ async def run_subagents_parallel(
                             continue
                         else:
                             print(
-                                f"\n[SubAgents] {engineer_id} has merge conflict but no rounds left - deferring to manager final review"
+                                f"\n[SubAgents] {engineer_id} has merge conflict but "
+                                "no rounds left - deferring to manager final review"
                             )
                             result.conflict_files = conflict_files
 
@@ -794,7 +885,8 @@ async def run_subagents_parallel(
                         and runner.can_accept_more_tasks()
                     ):
                         print(
-                            f"\n[SubAgents] {engineer_id} didn't commit - auto-reassigning same task to continue"
+                            f"\n[SubAgents] {engineer_id} didn't commit - "
+                            "auto-reassigning same task to continue"
                         )
 
                         runner.result = None
@@ -861,7 +953,8 @@ async def run_subagents_parallel(
                                 )
 
                                 print(
-                                    f"\n[SubAgents] Assigning {target_engineer_id} with new task (round {new_subagent.current_round})"
+                                    f"\n[SubAgents] Assigning {target_engineer_id} with "
+                                    f"new task (round {new_subagent.current_round})"
                                 )
                                 print(f"- New task: {new_subagent.task_id}")
                                 for line in task_module.get_new_task_print_lines(
@@ -877,7 +970,8 @@ async def run_subagents_parallel(
                                 tasks[new_task] = target_runner
                                 assigned_engineer_ids.add(target_engineer_id)
                                 print(
-                                    f"[SubAgents] {target_engineer_id} added back to task pool for round {new_subagent.current_round}"
+                                    f"[SubAgents] {target_engineer_id} added back to "
+                                    f"task pool for round {new_subagent.current_round}"
                                 )
 
                             elif target_engineer_id in inactive_engineer_ids:
@@ -897,13 +991,15 @@ async def run_subagents_parallel(
                                 assigned_engineer_ids.add(target_engineer_id)
                                 active_engineer_ids.add(target_engineer_id)
                                 print(
-                                    f"[SubAgents] {target_engineer_id} onboarded and added to task pool"
+                                    f"[SubAgents] {target_engineer_id} onboarded "
+                                    "and added to task pool"
                                 )
 
                         # Move completed runner to idle if not assigned
                         if engineer_id not in assigned_engineer_ids:
                             print(
-                                f"[SubAgents] {engineer_id} moved to idle pool (waiting for dependencies)"
+                                f"[SubAgents] {engineer_id} moved to idle pool "
+                                "(waiting for dependencies)"
                             )
                             idle_runners.append(runner)
 
@@ -915,7 +1011,8 @@ async def run_subagents_parallel(
                         ]
                     else:
                         print(
-                            f"[SubAgents] {engineer_id} reached max rounds ({runner.max_rounds_chat})"
+                            f"[SubAgents] {engineer_id} reached max rounds "
+                            f"({runner.max_rounds_chat})"
                         )
                         finished_engineer_ids.add(engineer_id)
                         print(f"[SubAgents] {engineer_id} marked as finished")
