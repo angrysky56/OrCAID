@@ -169,7 +169,28 @@ class MockManager(AssignmentMixin):
         print(f"[MockManager] {msg}")
 
     def save_events(self, name, event_count_before):
-        return None
+        """Save events from conversation to output logger for test analysis."""
+        if not hasattr(self, 'conversation') or not self.conversation:
+            return
+        if not hasattr(self, 'output_logger') or not self.output_logger:
+            return
+
+        events = list(self.conversation.state.events) if hasattr(self.conversation.state, 'events') else []
+        if event_count_before >= len(events):
+            return
+
+        new_events = events[event_count_before:]
+        self.log(f"Saving {len(new_events)} new events (phase={name})...")
+
+        for idx, event in enumerate(new_events):
+            global_idx = event_count_before + idx
+            event_data = {
+                "event_index": global_idx,
+                "event_type": getattr(event, 'type', 'unknown'),
+                "phase": name,
+                "engineer_id": "manager",
+            }
+            self.output_logger.log_event(**event_data)
 
 
 def test_assign_task_prompt_injection():

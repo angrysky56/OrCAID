@@ -376,6 +376,7 @@ class SelfImproveTask(TaskModule):
         new_subagent.worktree_path = old_runner.subagent.worktree_path
         new_subagent.branch_name = old_runner.subagent.branch_name
         new_subagent.base_commit = old_runner.subagent.base_commit
+        new_subagent.file_path = old_runner.subagent.file_path
 
     def get_new_task_print_lines(self, subagent):
         return [f"- File: {subagent.file_path}"]
