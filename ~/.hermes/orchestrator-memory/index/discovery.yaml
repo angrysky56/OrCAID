@@ -1,7 +1,0 @@
-task_types:
-  code_review:
-    drift_rate: 1.0
-    last_outcome: failed
-    last_verified: '2026-05-19T00:02:49.781643'
-    total_completed: 0
-    total_failed: 3

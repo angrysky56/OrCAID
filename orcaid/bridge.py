@@ -41,7 +41,7 @@ def get_memory_base() -> Path:
             "ORCHESTRATOR_MEMORY_BASE",
             str(Path.home() / ".hermes" / "orchestrator-memory"),
         )
-    )
+    ).expanduser()
 
 
 def get_bridge_storage() -> Path:
@@ -51,7 +51,7 @@ def get_bridge_storage() -> Path:
             "ORCAID_BRIDGE_STORAGE",
             str(Path.home() / ".hermes" / "orcaid-bridge"),
         )
-    )
+    ).expanduser()
 
 
 # Module-level constants kept for backward compatibility — callers that
