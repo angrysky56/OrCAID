@@ -1,0 +1,119 @@
+task_type: code_review
+version: "1.0.0"
+description: "Verification checklist for OrCAID commit0/code implementation subagents"
+
+pass_criteria:
+  - id: commit_made
+    description: "Subagent made at least one new commit with changes"
+    verification_method: "verify subagent_result.commit_hash is set and != base_commit"
+    required: true
+    weight: 10
+    failure_message: "No new commit detected — agent may have run out of iterations"
+
+  - id: files_modified
+    description: "Expected files were modified per task requirements"
+    verification_method: "compare subagent_result.files_modified against task.requirements list"
+    required: true
+    weight: 8
+    failure_message: "Missing expected file modifications from task requirements"
+
+  - id: no_conflicts
+    description: "No merge conflicts during collect_and_merge"
+    verification_method: "verify subagent_result.conflict_files is empty"
+    required: true
+    weight: 8
+    failure_message: "Merge conflict detected — requires human resolution"
+
+  - id: success_flag
+    description: "Subagent did not throw exceptions / crash"
+    verification_method: "verify subagent_result.error is None"
+    required: true
+    weight: 7
+    failure_message: "Subagent reported failure"
+
+  - id: test_coverage
+    description: "Tests added or modified for changed files"
+    verification_method: "check for test files in files_modified OR task.requirements mentions tests"
+    required: false
+    weight: 6
+    failure_message: "No test coverage detected for changed files"
+
+  - id: iteration_efficiency
+    description: "Subagent didn't exhaust max iterations (suggests unnecessary work)"
+    verification_method: "check subagent_result.actual_iterations < subagent_result.max_iterations * 0.9"
+    required: false
+    weight: 4
+    failure_message: "Agent used near-maximum iterations — may indicate inefficiency or looping"
+
+  - id: cost_reasonable
+    description: "Cost is within expected range for task complexity"
+    verification_method: "check subagent_result.cost < expected_cost_per_complexity[complexity] * 1.5"
+    required: false
+    weight: 3
+    failure_message: "Cost significantly higher than expected"
+
+drift_categories:
+  phase_skip:
+    description: "Subagent completed without making expected commits/files"
+    severity: critical
+    auto_retry: true
+    correction_template: |
+      PREVIOUS ATTEMPT: {task_id}
+      DRIFT: Subagent completed but output doesn't match requirements.
+      EXPECTED: {requirements}
+      ACTUAL: files_modified={files_modified}, commit={commit_hash}
+      CORRECTION: {instructions}
+
+  phase_repeat:
+    description: "Subagent re-executed work already in prior round"
+    severity: medium
+    auto_retry: false
+    escalation: true
+
+  criteria_mismatch:
+    description: "Output doesn't meet pass criteria"
+    severity: high
+    auto_retry: true
+
+  assumption_violation:
+    description: "Subagent violated preflight constraints from task assignment"
+    severity: high
+    auto_retry: false
+    escalation: true
+
+  tool_misuse:
+    description: "Wrong approach for the task type"
+    severity: medium
+    auto_retry: true
+
+  context_bleed:
+    description: "Subagent acted on information from another engineer's worktree"
+    severity: low
+    auto_retry: true
+
+  output_corruption:
+    description: "Incomplete commit, missing files, malformed artifact"
+    severity: high
+    auto_retry: true
+
+  protocol_breach:
+    description: "Subagent didn't follow worktree/commit conventions"
+    severity: medium
+    auto_retry: false
+    escalation: true
+
+max_retries: 2
+escalate_after: 2
+escalation_path: "human_review"
+
+scoring:
+  mode: all_required
+  partial_credit: false
+  weight_by_criteria: true
+
+expected_cost_per_complexity:
+  trivial: 0.10
+  low: 0.25
+  medium: 0.50
+  high: 1.00
+  complex: 2.00

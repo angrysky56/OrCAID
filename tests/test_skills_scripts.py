@@ -175,3 +175,90 @@ def test_build_dep_graph_skips_unreadable_files(tmp_path: Path):
     stdin = json.dumps({"files": pass_files}).encode()
     graph_data = _run_script(BUILD_GRAPH, str(tmp_path), stdin=stdin)
     assert graph_data["graph"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# Workspace runner round-trip — confirms a real ExecResult shape produces      #
+# usable JSON when fed through the manager's parsing path.                    #
+# --------------------------------------------------------------------------- #
+
+
+def test_workspace_runner_shell_command_shape(fixture_repo: Path):
+    """Smoke test the shell command shape produced by
+    ``_run_script_in_workspace``: the base64-encoded script + base64-encoded
+    stdin payload should decode and execute correctly under plain ``bash -c``.
+
+    We can't spin up a Docker workspace inside this test, but we can run the
+    same shell command locally and confirm the encoding survives quoting and
+    multi-line script content intact. If this passes, the only thing left
+    that could break inside the real workspace is the workspace handler
+    itself (which is openhands SDK code we're not exercising here).
+    """
+    import base64
+    import shlex
+    import uuid
+
+    script_b64 = base64.b64encode(FIND_STUBS.read_bytes()).decode("ascii")
+    tmp = f"/tmp/orcaid_skill_{uuid.uuid4().hex[:10]}.py"
+    repo_quoted = shlex.quote(str(fixture_repo))
+
+    cmd = (
+        f"echo {script_b64} | base64 -d > {tmp} && "
+        f"python3 {tmp} {repo_quoted}; "
+        f"rc=$?; rm -f {tmp}; exit $rc"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"workspace-shape shell command failed: {result.stderr.decode()}"
+    )
+    out = json.loads(result.stdout.decode())
+    assert set(entry["file"] for entry in out["files"]) == {
+        "src/widget.py",
+        "src/helper.py",
+    }
+
+
+def test_workspace_runner_with_stdin_payload(fixture_repo: Path):
+    """Same round-trip but for the dep-graph script, which reads JSON on
+    stdin. Both base64 payloads (script and stdin) must survive shell
+    quoting without corruption."""
+    import base64
+    import shlex
+    import uuid
+
+    pass_files = [
+        {"file": "src/widget.py", "functions": ["make_widget"]},
+        {"file": "src/helper.py", "functions": ["help_a", "help_b"]},
+    ]
+
+    script_b64 = base64.b64encode(BUILD_GRAPH.read_bytes()).decode("ascii")
+    stdin_b64 = base64.b64encode(
+        json.dumps({"files": pass_files}).encode("utf-8")
+    ).decode("ascii")
+    tmp = f"/tmp/orcaid_skill_{uuid.uuid4().hex[:10]}.py"
+    repo_quoted = shlex.quote(str(fixture_repo))
+
+    cmd = (
+        f"echo {script_b64} | base64 -d > {tmp} && "
+        f"echo {stdin_b64} | base64 -d | python3 {tmp} {repo_quoted}; "
+        f"rc=$?; rm -f {tmp}; exit $rc"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", cmd],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"stdin-payload shell command failed: {result.stderr.decode()}"
+    )
+    out = json.loads(result.stdout.decode())
+    assert out["graph"]["src/widget.py"] == ["src/helper.py"]
+    assert out["graph"]["src/helper.py"] == []

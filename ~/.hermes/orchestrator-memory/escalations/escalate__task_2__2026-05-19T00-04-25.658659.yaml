@@ -1,0 +1,50 @@
+drift_log:
+- category: phase_skip
+  check_result:
+    passed: false
+  criterion_description: Subagent made at least one new commit with changes
+  criterion_id: commit_made
+  failure_message: "No new commit detected \u2014 agent may have run out of iterations"
+  severity: critical
+- category: phase_skip
+  check_result:
+    passed: false
+  criterion_description: Expected files were modified per task requirements
+  criterion_id: files_modified
+  failure_message: Missing expected file modifications from task requirements
+  severity: critical
+- category: output_corruption
+  check_result:
+    passed: false
+  criterion_description: Subagent did not throw exceptions / crash
+  criterion_id: success_flag
+  failure_message: Subagent reported failure
+  severity: high
+- category: criteria_mismatch
+  check_result:
+    passed: false
+  criterion_description: Tests added or modified for changed files
+  criterion_id: test_coverage
+  failure_message: No test coverage detected for changed files
+  severity: high
+engineer_id: engineer_2
+escalation: true
+resolution: pending_human_review
+review_result:
+  conflict_files: []
+  engineer_id: engineer_2
+  merge_message: ''
+  merge_method: none
+  merged: false
+  review_notes: 'No changes to merge: No new commit was made. Agent may have run out
+    of iterations before committing.'
+  subagent_success: false
+  task_id: task_2
+subagent_result:
+  commit_hash: ''
+  error: No new commit was made. Agent may have run out of iterations before committing.
+  files_modified: []
+  success: false
+task_id: task_2
+timestamp: '2026-05-19T00:04:25.658659'
+verdict: fail

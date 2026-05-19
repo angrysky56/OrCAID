@@ -8,8 +8,6 @@ Handles task analysis, delegation, and subagent orchestration.
 import json
 import logging
 import os
-import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -123,37 +121,41 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
         to extract pass stubs and dependency graph BEFORE the scan_analysis
         LLM call.
 
+        The scripts run **inside the workspace container** via
+        ``self.workspace.execute_command``, NOT on the host. The repo lives
+        only inside the Docker workspace (cloned by ``setup_workspace``);
+        the host has no copy. The earlier host-side ``Path(self.repo_dir).exists()``
+        check failed on every commit0 run because ``/workspace/<repo>_repo``
+        is a container path.
+
         Returns True if both scripts produced usable data — the caller can
         then build ``self.analysis_result`` directly via
         ``_build_analysis_from_prescan`` and *skip* the LLM exploration step
-        entirely. Returns False on any failure (no repo, non-Python repo,
+        entirely. Returns False on any failure (no workspace, non-Python repo,
         script error, no pass-stubs found), in which case the caller should
         fall back to the legacy LLM exploration path.
-
-        Side effect: stores raw output dicts on ``self._pre_scan_pass_data``
-        and ``self._pre_scan_dep_data`` for later use by the Step-B
-        skill-based delegation path (which can read these instead of re-running
-        the scripts). Does NOT send any message into ``self.conversation`` —
-        injecting the pre-scan into the conversation while also keeping the
-        legacy "go explore the repo" scan prompt is the *contradictory
-        instructions* bug fixed by this commit.
         """
         self._pre_scan_pass_data = None
         self._pre_scan_dep_data = None
 
-        repo_dir = Path(self.repo_dir)
-        if not repo_dir.exists():
-            self.log(f"[pre-scan] repo_dir not found: {repo_dir}, skipping scripts")
+        if not getattr(self, "workspace", None):
+            self.log("[pre-scan] no workspace available — falling back to LLM exploration")
             return False
 
         skills_root = Path(__file__).parent.parent / "skills"
         pass_script = skills_root / "repo-scan" / "scripts" / "find_pass_stubs.py"
         dep_script = skills_root / "dependency-graph" / "scripts" / "build_dependency_graph.py"
 
-        # 1. find_pass_stubs.py
-        pass_output = self._run_script(pass_script, str(repo_dir))
+        if not pass_script.exists() or not dep_script.exists():
+            self.log(f"[pre-scan] skill scripts missing at {skills_root}, falling back")
+            return False
+
+        # 1. find_pass_stubs.py inside the workspace container
+        pass_output = self._run_script_in_workspace(
+            pass_script, self.repo_dir, timeout=60
+        )
         if pass_output is None:
-            self.log("[pre-scan] find_pass_stubs.py failed, falling back to LLM exploration")
+            self.log("[pre-scan] find_pass_stubs.py failed in workspace, falling back to LLM")
             return False
 
         try:
@@ -163,7 +165,7 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
             return False
 
         pass_files = pass_data.get("files", [])
-        self.log(f"[pre-scan] found {len(pass_files)} files with pass stubs")
+        self.log(f"[pre-scan] found {len(pass_files)} files with pass stubs in {self.repo_dir}")
 
         if not pass_files:
             self.log(
@@ -172,14 +174,15 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
             )
             return False
 
-        # 2. build_dependency_graph.py (takes pass_files JSON on stdin)
-        dep_output = self._run_script(
+        # 2. build_dependency_graph.py — takes pass_files JSON on stdin
+        dep_output = self._run_script_in_workspace(
             dep_script,
-            str(repo_dir),
-            input_json={"files": pass_files},
+            self.repo_dir,
+            stdin_json={"files": pass_files},
+            timeout=60,
         )
 
-        dep_data: dict = {"repo": str(repo_dir), "graph": {}, "files_analyzed": 0}
+        dep_data: dict = {"repo": self.repo_dir, "graph": {}, "files_analyzed": 0}
         if dep_output is not None:
             try:
                 dep_data = json.loads(dep_output)
@@ -191,6 +194,73 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
         self._pre_scan_pass_data = pass_data
         self._pre_scan_dep_data = dep_data
         return True
+
+    def _run_script_in_workspace(
+        self,
+        script_path: Path,
+        repo_dir: str,
+        *,
+        stdin_json: dict | None = None,
+        timeout: int = 60,
+    ) -> str | None:
+        """Run a host-side Python script inside the workspace container.
+
+        We base64-encode the script source on the host, ship it into the
+        container's filesystem via ``execute_command``, run it with the
+        target repo path as argv[1], and capture stdout. Optional stdin is
+        also base64-shipped so multi-line JSON survives shell quoting intact.
+
+        Returns trimmed stdout on success, None on any failure (the caller
+        is expected to fall back to the LLM exploration path).
+        """
+        import base64
+        import shlex
+        import uuid
+
+        try:
+            script_b64 = base64.b64encode(script_path.read_bytes()).decode("ascii")
+        except OSError as e:
+            self.log(f"[pre-scan] could not read {script_path}: {e}")
+            return None
+
+        tmp = f"/tmp/orcaid_skill_{uuid.uuid4().hex[:10]}.py"
+        repo_quoted = shlex.quote(repo_dir)
+
+        if stdin_json is not None:
+            try:
+                stdin_b64 = base64.b64encode(
+                    json.dumps(stdin_json).encode("utf-8")
+                ).decode("ascii")
+            except (TypeError, ValueError) as e:
+                self.log(f"[pre-scan] could not encode stdin payload: {e}")
+                return None
+            cmd = (
+                f"echo {script_b64} | base64 -d > {tmp} && "
+                f"echo {stdin_b64} | base64 -d | python3 {tmp} {repo_quoted}; "
+                f"rc=$?; rm -f {tmp}; exit $rc"
+            )
+        else:
+            cmd = (
+                f"echo {script_b64} | base64 -d > {tmp} && "
+                f"python3 {tmp} {repo_quoted}; "
+                f"rc=$?; rm -f {tmp}; exit $rc"
+            )
+
+        try:
+            result = self.workspace.execute_command(cmd, timeout=timeout)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.log(f"[pre-scan] workspace.execute_command failed: {e}")
+            return None
+
+        if getattr(result, "exit_code", 1) != 0:
+            stderr = getattr(result, "stderr", "") or ""
+            self.log(
+                f"[pre-scan] {script_path.name} exit_code={result.exit_code} "
+                f"stderr={stderr[:200]}"
+            )
+            return None
+        out = getattr(result, "stdout", "") or ""
+        return out.strip() or None
 
     def _build_analysis_from_prescan(self):
         """Construct an ``AnalysisResult`` directly from pre-scan script output.
@@ -253,48 +323,53 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
         }
         return result
 
-    def _run_script(
-        self, script_path: Path, *args: str, input_json: dict | None = None
-    ) -> str | None:
-        """Run a skill script, return stdout on success or None on failure."""
-        if not script_path.exists():
-            return None
-        cmd = [sys.executable, str(script_path), *args]
-        try:
-            inp = json.dumps(input_json).encode() if input_json else None
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=60,
-                input=inp,
-            )
-            if result.returncode == 0 and result.stdout:
-                return result.stdout.decode().strip()
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return None
+    def _inject_analysis_summary(self, analysis) -> None:
+        """Send a compact analysis summary into the manager's conversation.
 
-    def _inject_pre_scan_context(
-        self, pass_data: dict, dep_data: dict
-    ) -> None:
-        """Send pre-scanned pass stubs + dep graph into the conversation."""
-        pass_files = pass_data.get("files", [])
-        dep_graph = dep_data.get("graph", {})
+        Called after pre-scan succeeds (and the LLM exploration is skipped)
+        so the delegation step has the file list + dep graph in context
+        without having to re-explore. Keep this tight — every token here
+        is paid for at delegation time. Roughly 200–400 tokens for typical
+        commit0 repos.
+        """
+        pass_files = analysis.pass_files or []
+        functions_by_file = analysis.functions_by_file or {}
+        deps = analysis.blocking_dependencies or {}
+        order = analysis.implementation_order or pass_files
 
         lines = [
-            "## Pre-scanned Repository Analysis (deterministic, no LLM burn)\n",
-            f"**Files with pass stubs:** {len(pass_files)}\n",
+            "=== REPOSITORY PRE-SCAN (deterministic) ===",
+            f"Repo: {self.repo_dir}",
+            f"Pass-stub files: {len(pass_files)}",
+            f"Total functions to implement: {analysis.total_funcs}",
+            "",
+            "Files in topological order (implement first-listed first):",
         ]
-        for pf in pass_files[:20]:
-            funcs = ", ".join(pf["functions"][:5])
-            lines.append(f"- `{pf['file']}`: [{funcs}]")
-        if len(pass_files) > 20:
-            lines.append(f"  ... and {len(pass_files) - 20} more files")
+        for f in order[:50]:
+            funcs = functions_by_file.get(f, [])
+            # Dedupe while preserving order so duplicate-name stubs (e.g.
+            # multiple `_eval` overrides) collapse cleanly in the summary.
+            seen = set()
+            funcs_unique = [x for x in funcs if not (x in seen or seen.add(x))]
+            funcs_str = ", ".join(funcs_unique) if funcs_unique else "(no functions detected)"
+            lines.append(f"  - {f}: {len(funcs)} stubs [{funcs_str}]")
+        if len(order) > 50:
+            lines.append(f"  ... and {len(order) - 50} more files")
 
-        if dep_graph:
-            lines.append("\n**Dependency graph** (top 10):")
-            for f, deps in list(dep_graph.items())[:10]:
-                lines.append(f"  `{f}` → {list(deps)}")
+        # Show dependencies only when non-trivial (otherwise it's noise).
+        nontrivial_deps = {f: d for f, d in deps.items() if d}
+        if nontrivial_deps:
+            lines.append("")
+            lines.append("Dependencies (file → files it imports from):")
+            for f, d in list(nontrivial_deps.items())[:30]:
+                lines.append(f"  {f} → {d}")
+
+        lines.append("")
+        lines.append(
+            "You already have the complete repository analysis above. Do NOT "
+            "explore the repo further. Proceed directly to producing the "
+            "delegation JSON using these files."
+        )
 
         self.conversation.send_message("\n".join(lines))
 
@@ -522,6 +597,15 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
             self.analysis_tokens = 0
             iterations = 0
             self.log(f"Analysis (deterministic) completed in {duration:.1f}s — $0.00, 0 tokens")
+
+            # Critical: inject a compact pre-scan summary into the manager's
+            # conversation so the *next* step (delegate_tasks) has context to
+            # produce a delegation plan against, instead of re-exploring the
+            # repo and burning hundreds of thousands of tokens. Without this
+            # the legacy delegate_tasks LLM has zero context (we skipped the
+            # exploration phase) and either churns indefinitely or falls back
+            # to a generic per-file plan.
+            self._inject_analysis_summary(prescan_analysis)
         else:
             self.log("Starting analysis (LLM exploration path)...")
             prompt = self.prompts.get("scan_analysis", "")
