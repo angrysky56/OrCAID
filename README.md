@@ -140,23 +140,45 @@ Subagents investigate different bug clusters. Verification: reproduction script 
 
 ### Full multi-agent run:
 
+cd /your-path-to/OrCAID
+
 ```bash
-cd /home/ty/Repositories/ai_workspace/OrCAID
-uv run orcaid \
-  --task commit0 \
-  --model <your-model> \
-  --subagent_model <subagent-model> \
-  --max_iterations 50 \
+
+ORCAID_RETRY_POLICY=kl uv run python -m orcaid.cli \
+  --task=commit0 \
+  --model=minimax/MiniMax-M2.7 \
+  --multi_agent=true \
+  --max_iterations=100 \
+  --sub_iterations=100 \
   --max_subagents 4 \
-  --sub_iterations 50 \
-  --max_rounds_chat 2
+  --max_rounds_chat 4 \
+  --repo=angrysky56/OrCAID
 ```
 
-### Single-agent baseline (for comparison):
+### Simple run:
 
 ```bash
-uv run orcaid --task commit0 --model <model> --single_agent
+uv run python -m orcaid.cli --task=commit0 --repo=angrysky56/OrCAID
 ```
+
+### Applying Patches:
+
+OrCAID generates a comprehensive git patch (e.g. `patch.diff`) in the `outputs/` folder after a successful run. You can apply and commit this patch cleanly to any git repository branch using our automated helper script:
+
+```bash
+uv run python scripts/apply_patch.py \
+  --patch=outputs/commit0/MiniMax-M2.7/OrCAID.git/multi-agent/manageriters=50_subagents=4_subiters=50_rchats=2/patch.diff \
+  --repo-dir=. \
+  --branch=orcaid-refactor \
+  --commit-message="feat: apply OrCAID multi-agent refactoring changes"
+```
+
+Options:
+- `--patch` / `-p`: Path to the generated `patch.diff` (Required).
+- `--repo-dir` / `-d`: Target repository directory to patch (Defaults to `.`).
+- `--branch` / `-b`: Name of the git branch to create or checkout (Defaults to `orcaid-patch`).
+- `--commit-message` / `-m`: Custom commit message.
+- `--force` / `-f`: Force apply even if the destination repository has uncommitted changes.
 
 ---
 
