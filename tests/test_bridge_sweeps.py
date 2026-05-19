@@ -166,10 +166,10 @@ class MockManager(AssignmentMixin):
         self.output_logger = MagicMock()
         
     def log(self, msg):
-        pass
+        print(f"[MockManager] {msg}")
 
     def save_events(self, name, event_count_before):
-        pass
+        return None
 
 
 def test_assign_task_prompt_injection():

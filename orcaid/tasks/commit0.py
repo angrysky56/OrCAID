@@ -466,7 +466,19 @@ class Commit0Task(TaskModule):
         return lines
 
     def prepare_reuse_subagent(self, new_subagent, old_runner):
-        pass
+        """Prepare a new subagent for reuse by copying state from the old runner.
+        
+        Copies task-specific information (worktree path, branch name, base commit)
+        from the old runner's subagent to the new subagent, enabling the new
+        subagent to continue working in the same context.
+        
+        Args:
+            new_subagent: The new SubAgent that will take over the task.
+            old_runner: The previous SubAgentRunner that was handling a task.
+        """
+        new_subagent.worktree_path = old_runner.subagent.worktree_path
+        new_subagent.branch_name = old_runner.subagent.branch_name
+        new_subagent.base_commit = old_runner.subagent.base_commit
 
     def get_new_task_print_lines(self, subagent):
         lines = [f"- New file: {subagent.file_path}"]
@@ -483,7 +495,20 @@ class Commit0Task(TaskModule):
         return branch_name, worktree_name
 
     def post_onboard_subagent(self, subagent, repo_dir):
-        pass
+        """Perform post-onboarding setup for a newly onboarded subagent.
+        
+        Called after the worktree and branch are created for a subagent.
+        This method handles any additional setup such as logging, workspace
+        preparation, or recording the subagent state.
+        
+        Args:
+            subagent: The newly onboarded SubAgent.
+            repo_dir: The path to the main repository directory.
+        """
+        print(
+            f"[SubAgents] Onboarded engineer {subagent.engineer_id}: "
+            f"branch={subagent.branch_name}, worktree={subagent.worktree_path}"
+        )
 
     def get_completion_print_lines(self, result):
         lines = []

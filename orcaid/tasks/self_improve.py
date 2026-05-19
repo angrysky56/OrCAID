@@ -323,7 +323,21 @@ class SelfImproveTask(TaskModule):
         return lines
 
     def prepare_reuse_subagent(self, new_subagent, old_runner):
-        pass
+        """
+        Copy task-specific info from old runner to reused subagent.
+
+        When reusing a subagent's state/context for a new task, transfer the
+        worktree path, branch name, and base commit from the old runner's
+        subagent to the new subagent. This allows the new subagent to continue
+        working in the same worktree context.
+
+        Args:
+            new_subagent: The new subagent to populate with reused context.
+            old_runner: The old runner containing the previous subagent state.
+        """
+        new_subagent.worktree_path = old_runner.subagent.worktree_path
+        new_subagent.branch_name = old_runner.subagent.branch_name
+        new_subagent.base_commit = old_runner.subagent.base_commit
 
     def get_new_task_print_lines(self, subagent):
         return [f"- File: {subagent.file_path}"]
@@ -334,7 +348,18 @@ class SelfImproveTask(TaskModule):
         return branch_name, worktree_name
 
     def post_onboard_subagent(self, subagent, repo_dir):
-        pass
+        """
+        Perform post-onboarding setup for a subagent.
+
+        After a subagent is onboarded (branch/worktree created), set the
+        worktree_path on the subagent to the repository directory. This allows
+        the subagent to know its working context.
+
+        Args:
+            subagent: The subagent that was onboarded.
+            repo_dir: The path to the repository directory (worktree location).
+        """
+        subagent.worktree_path = repo_dir
 
     def get_completion_print_lines(self, result):
         lines = []
