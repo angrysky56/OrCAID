@@ -28,13 +28,9 @@ class PaperbenchConfig:
     test_max_depth: int = 999
     test_reproduce_timeout: int = 300
     judge_type: str = "simple"
-    judge_model: str = None
+    judge_model: str = "neulab/gpt-5-mini"
     code_dev: bool = True
     output_dir: str = "outputs"
-
-    def __post_init__(self):
-        if self.judge_model is None:
-            self.judge_model = os.getenv("LLM_MODEL") or os.getenv("MODEL") or "neulab/gpt-5-mini"
 
 
 class PaperbenchTask(TaskModule):
