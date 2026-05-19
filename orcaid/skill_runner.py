@@ -23,6 +23,7 @@ Example:
         "max_agents": 4,
     })
 """
+
 from __future__ import annotations
 
 import json
@@ -56,6 +57,7 @@ def _load_skill(skill_name: str, skills_root: Path) -> dict[str, Any]:
     match = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
     if match:
         import yaml
+
         frontmatter = yaml.safe_load(match.group(1)) or {}
 
     # Load all reference files listed in frontmatter
@@ -77,7 +79,9 @@ def _load_skill(skill_name: str, skills_root: Path) -> dict[str, Any]:
     }
 
 
-def _render_template(template: str, inputs: dict[str, Any], references: dict[str, str]) -> str:
+def _render_template(
+    template: str, inputs: dict[str, Any], references: dict[str, str]
+) -> str:
     """Simple ${variable} substitution — handles inputs and references dicts."""
     result = template
     for key, val in inputs.items():
@@ -164,12 +168,21 @@ class SkillRunner:
         model = self.model
         if model.startswith("minimax/") and base_url:
             model = "openai/" + model.split("/", 1)[1]
-        response = litellm.completion(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-        )
+
+        kwargs = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+        }
+        if base_url:
+            kwargs["api_base"] = base_url
+
+        api_key = os.getenv("LLM_API_KEY")
+        if api_key:
+            kwargs["api_key"] = api_key
+
+        response = litellm.completion(**kwargs)
         # litellm exposes .usage and ._hidden_params['response_cost']. Both are
         # best-effort — if the provider doesn't surface them, we just record 0.
         try:
@@ -177,8 +190,7 @@ class SkillRunner:
             if usage:
                 self.last_tokens += int(usage.get("total_tokens", 0) or 0)
             hidden = (
-                response.get("_hidden_params")
-                if hasattr(response, "get") else None
+                response.get("_hidden_params") if hasattr(response, "get") else None
             ) or {}
             cost = hidden.get("response_cost")
             if cost is not None:
@@ -187,7 +199,13 @@ class SkillRunner:
             pass
         return response["choices"][0]["message"]["content"]
 
-    def run(self, skill_name: str, *, inputs: dict[str, Any], references: list[str] | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        skill_name: str,
+        *,
+        inputs: dict[str, Any],
+        references: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Run a named skill with the given inputs.
 
@@ -219,8 +237,8 @@ class SkillRunner:
         # Resolve which references to inject
         if references is None:
             refs_to_load = set(
-                frontmatter.get("metadata", {}).get("references", []) +
-                frontmatter.get("metadata", {}).get("consumes", [])
+                frontmatter.get("metadata", {}).get("references", [])
+                + frontmatter.get("metadata", {}).get("consumes", [])
             )
         else:
             refs_to_load = set(references)
@@ -244,19 +262,25 @@ class SkillRunner:
             else:
                 content = self._complete_via_litellm(prompt)
         except Exception as e:
-            raise RuntimeError(f"SkillRunner LLM call failed for skill={skill_name}: {e}") from e
+            raise RuntimeError(
+                f"SkillRunner LLM call failed for skill={skill_name}: {e}"
+            ) from e
 
         # Parse JSON output
         try:
             result = _parse_json_response(content)
         except json.JSONDecodeError:
-            logger.warning("[SkillRunner] skill=%s returned non-JSON: %.200s", skill_name, content)
+            logger.warning(
+                "[SkillRunner] skill=%s returned non-JSON: %.200s", skill_name, content
+            )
             raise
 
         # Warn on missing output keys
         output_schema = frontmatter.get("metadata", {}).get("produces", [])
         for key in output_schema:
             if key not in result:
-                logger.warning("[SkillRunner] skill=%s output missing key=%s", skill_name, key)
+                logger.warning(
+                    "[SkillRunner] skill=%s output missing key=%s", skill_name, key
+                )
 
         return result

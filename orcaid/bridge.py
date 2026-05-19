@@ -129,6 +129,7 @@ def load_checklist(task_type: str, checklist_base: Optional[Path] = None) -> dic
             # Auto-initialize the user's local orchestrator-memory directory structure
             om_checklist.parent.mkdir(parents=True, exist_ok=True)
             import shutil
+
             shutil.copy2(bridge_checklist, om_checklist)
             with open(om_checklist, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
@@ -601,7 +602,10 @@ def _mop_instructions(
             f"failed_criteria={p.failed_criterion_ids or 'none'}"
         )
 
-    prior_block = "\n".join(prior_lines) or "  (this is the first retry — only current attempt failed)"
+    prior_block = (
+        "\n".join(prior_lines)
+        or "  (this is the first retry — only current attempt failed)"
+    )
     files_block = ", ".join(sorted(seen_files)) or "none"
     criteria_block = ", ".join(sorted(seen_criteria)) or "none"
 
@@ -776,7 +780,9 @@ def write_drift_log(
 
     files_modified = list(getattr(subagent_result, "files_modified", []) or [])
     failed_criterion_ids = [
-        entry.get("criterion_id", "") for entry in drift_log if entry.get("criterion_id")
+        entry.get("criterion_id", "")
+        for entry in drift_log
+        if entry.get("criterion_id")
     ]
 
     # YAML-emit lists inline so callers reading frontmatter back with
@@ -1112,9 +1118,7 @@ def _get_prior_attempts(task_id: str, memory_base: Path) -> list:
                 PriorAttempt(
                     attempt=int(fm.get("attempt", 0) or 0),
                     files_modified=list(fm.get("files_modified") or []),
-                    failed_criterion_ids=list(
-                        fm.get("failed_criterion_ids") or []
-                    ),
+                    failed_criterion_ids=list(fm.get("failed_criterion_ids") or []),
                     missing_bond=fm.get("missing_bond") or None,
                 )
             )
@@ -1193,9 +1197,7 @@ def discovery_scan_for_orcaid(
         # rather than treating all failures uniformly.
         dominant = stats.get("dominant_deficit")
         bond_counts = stats.get("bond_deficit_counts") or {}
-        classified_total = sum(
-            v for k, v in bond_counts.items() if k != "unclassified"
-        )
+        classified_total = sum(v for k, v in bond_counts.items() if k != "unclassified")
         if dominant and classified_total >= 3:
             hint = _bond_routing_hint(dominant)
             dominant_count = bond_counts.get(dominant, 0)
@@ -1389,10 +1391,7 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
     """
     memory_base = memory_base or ORCHESTRATOR_MEMORY_BASE
 
-    index = {
-        "task_types": {},
-        "profiles": {}
-    }
+    index = {"task_types": {}, "profiles": {}}
 
     # 1. Sweep verified outcomes (skills directory)
     skills_dir = memory_base / "skills"
@@ -1432,7 +1431,7 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
                     "total_completed": 0,
                     "total_failed": 0,
                     "drift_rate": 0.0,
-                    "task_types": {}
+                    "task_types": {},
                 }
 
             p_stats = index["profiles"][profile]
@@ -1442,7 +1441,7 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
                 p_stats["task_types"][task_type] = {
                     "total_completed": 0,
                     "total_failed": 0,
-                    "drift_rate": 0.0
+                    "drift_rate": 0.0,
                 }
             p_stats["task_types"][task_type]["total_completed"] += 1
 
@@ -1515,7 +1514,7 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
                     "total_completed": 0,
                     "total_failed": 0,
                     "drift_rate": 0.0,
-                    "task_types": {}
+                    "task_types": {},
                 }
 
             p_stats = index["profiles"][profile]
@@ -1525,7 +1524,7 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
                 p_stats["task_types"][task_type] = {
                     "total_completed": 0,
                     "total_failed": 0,
-                    "drift_rate": 0.0
+                    "drift_rate": 0.0,
                 }
             p_stats["task_types"][task_type]["total_failed"] += 1
 
@@ -1552,7 +1551,9 @@ def run_indexer_sweep(memory_base: Optional[Path] = None):
         p_stats["drift_rate"] = p_stats["total_failed"] / total if total > 0 else 0.0
         for t_stats in p_stats["task_types"].values():
             t_total = t_stats["total_completed"] + t_stats["total_failed"]
-            t_stats["drift_rate"] = t_stats["total_failed"] / t_total if t_total > 0 else 0.0
+            t_stats["drift_rate"] = (
+                t_stats["total_failed"] / t_total if t_total > 0 else 0.0
+            )
 
     # Write the discovery.yaml file
     index_path = memory_base / "index" / "discovery.yaml"
@@ -1578,4 +1579,3 @@ def run_sweep_cli():
     except Exception as e:
         print(f"Error during sweep indexer: {e}", file=sys.stderr)
         sys.exit(1)
-

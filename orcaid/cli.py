@@ -717,6 +717,22 @@ async def run_workflow_inner(
                         json.dump(result_output, f, indent=2, default=str)
                     print(f"\n[Result] Saved to {result_path}")
 
+                    # Generate patch
+                    base_commit = None
+                    for s in subagents:
+                        if s.base_commit:
+                            base_commit = s.base_commit
+                            break
+
+                    if base_commit:
+                        patch_content, _ = generate_patch(
+                            workspace, manager.repo_dir, base_commit, subagent_results
+                        )
+                        patch_file = Path(workflow_config.output_dir) / "patch.diff"
+                        with open(patch_file, "w", encoding="utf-8") as f:
+                            f.write(patch_content)
+                        print(f"[Patch] Saved to {patch_file}")
+
                     # total_time not available in self_improve return path
                     # (early return — runtime_seconds used at final summary instead)
 

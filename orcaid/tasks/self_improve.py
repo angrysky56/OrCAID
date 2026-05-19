@@ -17,10 +17,14 @@ from .base import TaskModule
 
 @dataclass
 class SelfImproveConfig:
-    """Configuration for self-improvement task."""
+    """
+    Configuration for self-improvement / local-refactoring task.
+    This task lets OrCAID refactor, clean up, and improve any local git repository
+    specified by `repo_path` (defaulting to OrCAID's own codebase if not specified).
+    """
 
-    repo_path: str = "/home/ty/Repositories/ai_workspace/OrCAID"
-    task_description: str = "Improve the OrCAID codebase"
+    repo_path: str = str(Path(__file__).resolve().parents[2])
+    task_description: str = "Perform general refactoring, improve docstrings, and clean up style/syntax issues in the codebase"
     max_file_size_kb: int = 512
 
 
@@ -74,9 +78,15 @@ class SelfImproveTask(TaskModule):
         print(f"\n{'=' * 60}")
         print("[SelfImprove] Setting up workspace")
         print(f"{'=' * 60}")
-        print(f"[SelfImprove] Copying {src} -> {dst}")
 
-        # Clean existing destination contents if present without deleting the directory itself
+        # Use the container to clean up any files first (avoids host-side permission issues with docker-created files)
+        print("[SelfImprove] Cleaning workspace inside container...")
+        try:
+            workspace.execute_command("find /workspace/orcaid_workspace -mindepth 1 -delete")
+        except Exception as e:
+            print(f"[SelfImprove] Warning: container-side cleanup failed: {e}")
+
+        # Double check and clean host side as fallback
         if os.path.exists(dst):
             for item in os.listdir(dst):
                 item_path = os.path.join(dst, item)
@@ -86,10 +96,11 @@ class SelfImproveTask(TaskModule):
                     else:
                         os.unlink(item_path)
                 except Exception as e:
-                    print(f"[SelfImprove] Warning: failed to clean {item_path}: {e}")
+                    print(f"[SelfImprove] Warning: failed to clean {item_path} on host: {e}")
         else:
             os.makedirs(dst, exist_ok=True)
 
+        print(f"[SelfImprove] Copying {src} -> {dst}")
         # Copy contents from src to dst
         for item in os.listdir(src):
             if item == ".venv" or item == ".git" or item == ".planning":
@@ -101,9 +112,14 @@ class SelfImproveTask(TaskModule):
             s = os.path.join(src, item)
             d = os.path.join(dst, item)
             if os.path.isdir(s):
-                shutil.copytree(s, d, symlinks=True)
+                shutil.copytree(s, d, symlinks=True, dirs_exist_ok=True)
             else:
                 shutil.copy2(s, d)
+
+        # Configure git to trust the workspace inside the container to avoid dubious ownership errors
+        print("[SelfImprove] Configuring git safe directory inside container...")
+        workspace.execute_command("git config --global --add safe.directory '*'")
+
         print("[SelfImprove] Workspace setup complete")
 
     def evaluate(self, workspace) -> dict:

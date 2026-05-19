@@ -28,7 +28,7 @@ class PaperbenchConfig:
     test_max_depth: int = 999
     test_reproduce_timeout: int = 300
     judge_type: str = "simple"
-    judge_model: str = "neulab/gpt-5-mini"
+    judge_model: str = os.getenv("LLM_MODEL") or "neulab/gpt-5-mini"
     code_dev: bool = True
     output_dir: str = "outputs"
 
