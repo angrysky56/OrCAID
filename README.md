@@ -174,6 +174,7 @@ uv run python scripts/apply_patch.py \
 ```
 
 Options:
+
 - `--patch` / `-p`: Path to the generated `patch.diff` (Required).
 - `--repo-dir` / `-d`: Target repository directory to patch (Defaults to `.`).
 - `--branch` / `-b`: Name of the git branch to create or checkout (Defaults to `orcaid-patch`).

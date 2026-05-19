@@ -13,7 +13,9 @@ class Commit0Config:
     repo_name: str = "minitorch"
     base_branch: str = "main"
     docker_image_prefix: str = "docker.io/wentingzhao/"
-    docker_image: str = ""  # Override docker image directly (e.g., "docker.io/wentingzhao/minitorch:v0")
+    docker_image: str = (
+        ""  # Override docker image directly (e.g., "docker.io/wentingzhao/minitorch:v0")
+    )
     dataset_path: str = "data/commit0/commit0_combined"
 
 
@@ -64,12 +66,14 @@ class Commit0Task(TaskModule):
             if not repo_data.empty:
                 self.task_data = repo_data.iloc[0].to_dict()
                 return self.task_data
-        except Exception as e:
+        except Exception:
             # Gracefully ignore dataset loading errors for custom repositories
             pass
 
         # Dynamic dataset-free fallback for custom repositories
-        print(f"[Commit0] Repository '{self.config.repo_name}' not found in dataset. Using dynamic dataset-free fallback.")
+        print(
+            f"[Commit0] Repository '{self.config.repo_name}' not found in dataset. Using dynamic dataset-free fallback."
+        )
         repo_name = self.config.repo_name
         if "/" not in repo_name:
             repo_name = f"wentingzhao/{repo_name}"
@@ -78,10 +82,7 @@ class Commit0Task(TaskModule):
             "repo": repo_name,
             "test_cmd": "pytest",
             "test_dir": "tests/",
-            "test": {
-                "test_cmd": "pytest",
-                "test_dir": "tests/"
-            }
+            "test": {"test_cmd": "pytest", "test_dir": "tests/"},
         }
         return self.task_data
 
@@ -98,13 +99,13 @@ class Commit0Task(TaskModule):
         print("Step 1: Clone Repository")
         print("-" * 60)
         print(f"[Commit0] Cloning {repo}...")
-        
+
         repo_url = repo
         if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
             repo_url = f"https://github.com/{repo}"
             if not repo_url.endswith(".git"):
                 repo_url += ".git"
-                
+
         clone_cmd = (
             f"cd /workspace && "
             f"git clone --depth 1 -b {self.config.base_branch} "
@@ -467,11 +468,11 @@ class Commit0Task(TaskModule):
 
     def prepare_reuse_subagent(self, new_subagent, old_runner):
         """Prepare a new subagent for reuse by copying state from the old runner.
-        
+
         Copies task-specific information (worktree path, branch name, base commit)
         from the old runner's subagent to the new subagent, enabling the new
         subagent to continue working in the same context.
-        
+
         Args:
             new_subagent: The new SubAgent that will take over the task.
             old_runner: The previous SubAgentRunner that was handling a task.
@@ -496,11 +497,11 @@ class Commit0Task(TaskModule):
 
     def post_onboard_subagent(self, subagent, repo_dir):
         """Perform post-onboarding setup for a newly onboarded subagent.
-        
+
         Called after the worktree and branch are created for a subagent.
         This method handles any additional setup such as logging, workspace
         preparation, or recording the subagent state.
-        
+
         Args:
             subagent: The newly onboarded SubAgent.
             repo_dir: The path to the main repository directory.
