@@ -51,15 +51,28 @@ class Commit0Task(TaskModule):
     def load_task_data(self):
         from datasets import load_from_disk
 
-        dataset = load_from_disk(self.config.dataset_path)
-        df = dataset.to_pandas()
-        repo_data = df[df["repo"].str.contains(self.config.repo_name, case=False)]
-        if repo_data.empty:
-            raise ValueError(
-                f"Repository '{self.config.repo_name}' not found in dataset "
-                f"at {self.config.dataset_path}"
-            )
-        self.task_data = repo_data.iloc[0].to_dict()
+        try:
+            dataset = load_from_disk(self.config.dataset_path)
+            df = dataset.to_pandas()
+            repo_data = df[df["repo"].str.contains(self.config.repo_name, case=False)]
+            if not repo_data.empty:
+                self.task_data = repo_data.iloc[0].to_dict()
+                return self.task_data
+        except Exception as e:
+            # Gracefully ignore dataset loading errors for custom repositories
+            pass
+
+        # Dynamic dataset-free fallback for custom repositories
+        print(f"[Commit0] Repository '{self.config.repo_name}' not found in dataset. Using dynamic dataset-free fallback.")
+        self.task_data = {
+            "repo": self.config.repo_name,
+            "test_cmd": "pytest",
+            "test_dir": "tests/",
+            "test": {
+                "test_cmd": "pytest",
+                "test_dir": "tests/"
+            }
+        }
         return self.task_data
 
     def setup_workspace(self, workspace):
