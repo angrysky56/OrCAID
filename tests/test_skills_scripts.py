@@ -262,3 +262,22 @@ def test_workspace_runner_with_stdin_payload(fixture_repo: Path):
     out = json.loads(result.stdout.decode())
     assert out["graph"]["src/widget.py"] == ["src/helper.py"]
     assert out["graph"]["src/helper.py"] == []
+
+
+def test_load_prompts_resolves_correctly():
+    """Verify that load_prompts correctly resolves and loads prompt files."""
+    from orcaid.core.utils import load_prompts
+
+    # Test loading "commit0"
+    commit0_prompts = load_prompts("commit0")
+    assert isinstance(commit0_prompts, dict)
+    assert "subagent_prompt" in commit0_prompts
+    assert "manager_final_review_all" in commit0_prompts
+
+    # Test loading "paperbench"
+    paperbench_prompts = load_prompts("paperbench")
+    assert isinstance(paperbench_prompts, dict)
+
+    # Test non-existent task raises FileNotFoundError
+    with pytest.raises(FileNotFoundError):
+        load_prompts("non_existent_task_12345")

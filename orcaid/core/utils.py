@@ -587,11 +587,27 @@ def cleanup_stale_containers(verbose=True):
 
 def load_prompts(task="commit0", prompts_path=None):
     if prompts_path is None:
-        prompts_dir = Path(__file__).parent.parent / "prompts"
+        # Search relative to orcaid/core/utils.py first (parent.parent.parent / "prompts")
+        prompts_dir = Path(__file__).resolve().parent.parent.parent / "prompts"
         prompts_path = prompts_dir / f"{task}.yaml"
 
+        # Fallback 1: parent.parent / "prompts"
+        if not prompts_path.exists():
+            prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
+            prompts_path = prompts_dir / f"{task}.yaml"
+
+        # Fallback 2: Path.cwd() / "prompts"
+        if not prompts_path.exists():
+            prompts_dir = Path.cwd() / "prompts"
+            prompts_path = prompts_dir / f"{task}.yaml"
+
     if not prompts_path.exists():
-        return {}
+        raise FileNotFoundError(
+            f"Could not find prompt file '{task}.yaml'. Searched in: "
+            f"{(Path(__file__).resolve().parent.parent.parent / 'prompts')}, "
+            f"{(Path(__file__).resolve().parent.parent / 'prompts')}, and "
+            f"{(Path.cwd() / 'prompts')}"
+        )
 
     with open(prompts_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
