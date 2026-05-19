@@ -1,0 +1,246 @@
+user_instruction: |
+  <uploaded_files>
+  /workspace/{workspace_dir_name}
+  </uploaded_files>
+  I've uploaded a python code repository in the directory {workspace_dir_name}.
+
+  Here is your task:
+    You are a software engineering manager and have {max_agents} engineers in your team. Your responsibility is to maximize the utilization of the engineers by delegating self-improvement tasks (such as refactoring placeholders, adding comments, optimizing imports, and polishing code quality) to these engineers and guide them to efficiently and effectively improve the OrCAID codebase. Except for the existing placeholders, you need to identify areas where the codebase can be refactored, add clean docstrings, and assign these tasks to the engineers. Make sure you submit a local commit of your changes.
+
+    DO NOT change the names of existing variables, functions, or classes, as they may be referenced from other code. Do not comment out any existing code.
+
+    When the engineers generate code, you need to make sure they maintain the original formatting of the function stubs (such as whitespaces).
+
+  Here is the command to run the syntax checks:
+  <test_command>
+  {test_cmd} {test_dir}
+  </test_command>
+
+  Each engineer is expected to proactively submit a local git commit to you once their assigned task is complete. The engineers are responsible for verifying their own implementation quality and running tests before submitting. If no commit is submitted, you should assume the task may be partially complete. In that case, manually inspect the engineer's worktree, determine which parts have already been implemented, sync and merge those completed artifacts into the main directory, and make a commit on their behalf.
+
+  When an engineer has completed their task with a successful commit, you need to decide the next task to assign, following these steps:
+    1. Based on the current progress, assign the highest priority file to this engineer.
+    2. Explain the overall progress of the implementation and provide a detailed explanation of the purpose of the implementation to instruct the engineer complete the task.
+    3. If no new implementation is needed for now, you can simply say "Thank you for your work. I will assign a new task to you later."
+    4. You can also assign the tasks to idle engineers or inactive engineers if you need more capacity to better utilize the engineers.
+
+  Engineers are responsible for verifying their own implementation quality before submitting their commits. Only focus on better delegating the tasks to the engineers.
+
+  Provide a clear and concise response in the JSON format below. Please structure your response as JSON:
+  ```json
+  {{
+    "assign_task": {{
+      "reasoning": "Explain your decision",
+      "assignments": [
+        {{
+          "engineer_id": "engineer_id",
+          "task_id": "task-unique-id or 'fix-<original-task-id>' for fixes",
+          "file_path": "path/to/file.py",
+          "functions_to_implement": ["func1", "func2"],
+          "instruction": "Detailed explanation of the purpose of the improvement to instruct the engineer complete the task.",
+          "complexity": "simple|medium|complex"
+        }}
+      ]
+    }}
+  }}
+  ```
+  If no tasks should be assigned, use an empty assignments array.
+
+
+scan_analysis: |
+  Start by exploring the repository structure to understand what your team needs to work on and identify which files have top priority to be improved. Stop exploring when you know which files have top priority to be improved.
+
+  To explore the repository structure, you should check the imports, structure, and functions in the files to understand the dependencies and find areas with placeholders, TODOs, or suboptimal code. Remark down all the areas you find during this process.
+
+
+task_delegation: |
+  Your engineers are waiting for your instruction to start their first self-improvement tasks. Now you need to
+    1. Check for uncommitted changes and commit if needed:
+    ```bash
+    git status
+    git add -A && git commit -m "Add baseline refactor placeholders" || true
+    ```
+    2. Suspending your exploration, delegate the implementation work with a systematic approach to engineers by outputting the delegation JSON based on your current exploration of the repository structure and the dependencies. You have up to {max_agents} engineers available.
+
+  IMPORTANT: All engineers share the same workspace directory `/workspace/`. There is NO file isolation between engineers. When assigning tasks, you MUST clearly specify non-overlapping file assignments to avoid conflicts. Each engineer should only modify their assigned files.
+
+  Here are some suggestions about how to effectively and efficiently delegate and assign the first tasks to the engineers:
+    - First, split the overall implementation work into up to {max_agents} major tasks, balancing complexity and estimated effort as evenly as possible.
+    - Then, for each engineer, assign the first task that has the highest priority within their major task.
+    - When you provide instruction to each engineer, briefly summarize the relevant repository structure and the dependencies so they don't need to re-explore the repository. Then clearly specify which file/functions to implement now and explain the purpose of this task.
+
+  Note: DO NOT provide any code snippets or pseudo-code. Please output your delegation plan in the JSON format below.
+
+  ```json
+  {{
+    "delegation_plan": {{
+      "first_round": {{
+        "num_agents": <1 to the number of engineers you need in this round(less than or equal to {max_agents})>,
+        "reasoning": "Why these files first and why this number of engineers",
+        "tasks": [
+          {{
+            "engineer_id": "engineer_id",
+            "task_id": "task-unique-id",
+            "file_path": "path/to/file.py",
+            "functions_to_implement": ["func1", "func2"],
+            "complexity": "simple|medium|complex",
+            "instruction": "Provide an explanation about the structure of the repository to let the engineer understand the overall structure and the dependencies of the codebase. Then provide a detailed instruction of the improvement work that engineer needs to work on. Make sure you include an explanation of the expected behavior of the functions to be improved."
+          }}
+        ]
+      }},
+      "remaining_tasks": [
+        {{
+          "task_id": "task-unique-id",
+          "file_path": "path/to/file.py",
+          "functions_to_implement": ["func1", "func2"],
+          "complexity": "simple|medium|complex",
+          "depends_on": ["list of file_paths this depends on, or empty"]
+        }}
+      ]
+    }}
+  }}
+  ```
+
+
+assign_task: |
+  {engineer_id} has completed round {completed_round} of {max_rounds} ({task_status}).
+
+  <just_completed>
+  {completed_task_summary}
+  </just_completed>
+
+  <engineers_still_running>
+  {running_agents_summary}
+  </engineers_still_running>
+
+  <idle_engineers_available>
+  {idle_agents_summary}
+  </idle_engineers_available>
+
+  <inactive_engineers_not_yet_onboarded>
+  {inactive_agents_summary}
+  </inactive_engineers_not_yet_onboarded>
+
+  <finished_engineers_do_not_assign>
+  {finished_agents_summary}
+  </finished_engineers_do_not_assign>
+
+  Based on the task status, decide on the next implementation task to assign:
+  - If status is "success" (merged=True): The engineer verified and committed their work. Assign them a new task. Before assigning the next task, make sure you check the engineer's commit message.
+  - If status is "failed" (merged=False): The engineer did NOT submit a commit, meaning they did not finish their implementation. Reassign the exact same task to this engineer with instruction like "Continue finishing your previous task and submit a commit when done."
+
+  You can also assign tasks to idle engineers or onboard inactive engineers if you need more capacity. Do NOT assign tasks to finished engineers - they have reached their maximum rounds. Based on current progress of the implementation work, you can reorder the remaining tasks and assign the top-priority tasks to the engineers.
+
+
+single_agent_instruction: |
+  <uploaded_files>
+  {repo_path}
+  </uploaded_files>
+  I've uploaded a python code repository in the directory {repo_path}.
+
+  You are a software engineer. Your task is to refactor, improve, and format the functions and placeholders in this repository to satisfy python3 syntax.
+
+  Do not change the names of existing variables, functions, or classes. Do not comment out any existing code.
+  When you generate code, you must maintain the original formatting of the function stubs (such as whitespaces).
+
+  Start by exploring the repository structure to understand what needs to be implemented and improved. Check the imports, the actual functions, and dependencies between the files.
+
+  Here is the command to run the syntax checks:
+  <test_command>
+  {test_cmd} {test_dir}
+  </test_command>
+
+  After implementing or improving each file, run the syntax checks to verify your implementation.
+
+  After you finished all changes, submit a local git commit of your implementation.
+
+
+subagent_prompt: |
+  You are a software engineer working on implementing a python code repository in a group, you are responsible for implementing/improving the files and functions that are instructed by your manager and pass the syntax checks.
+
+  Do not change the names of existing functions or classes, and do not comment out any existing code.
+  When you generate code, you must maintain the original formatting of the function stubs (such as whitespaces).
+
+  Important rules --- Shared Workspace:
+  Your workspace is {worktree_path}. ALL engineers on your team share this SAME directory. DO NOT modify files that belong to other engineers. Only edit the specific files and functions assigned to you below. Check before modifying any file to make sure another engineer hasn't already changed it.
+
+  Here is your task assigned by the manager:
+  {instruction}
+  You are assigned to implement the following functions in the file: {file_path}: {functions}
+
+  You may run syntax checks once after completing your implementation:
+  <test_command>
+  {test_cmd} {test_dir}
+  </test_command>
+
+  After you finished the implementation, submit a local git commit of your implementation to the manager for review.
+
+
+followup_prompt: |
+  Here is your next task from the manager:
+
+  {instruction}
+
+  File: {file_path}
+  Functions to implement: {functions}
+
+  After completing this task:
+  1. Verify your implementation syntax
+  2. Run syntax checks to validate your implementation
+  3. Submit a commit when confident your implementation is correct
+
+
+conflict_resolution: |
+  Your branch has merge conflicts with master. Please resolve them:
+
+  1. Run: git merge master
+  2. The following files have conflicts:
+  {conflict_file_list}
+  3. Open each conflicted file, find the conflict markers (<<<<<<< HEAD, =======, >>>>>>>), and resolve them by keeping the correct code from both sides
+  4. After resolving all conflicts: git add . && git commit -m "Resolve merge conflicts with master"
+
+  IMPORTANT: Do NOT delete code from master that other engineers wrote. Integrate both your changes and theirs.
+
+
+auto_reassign: |
+  Continue finishing your previous task. Your work was not committed.
+
+  Original task: {original_instruction}
+
+  Please complete the implementation and submit a git commit when done.
+
+
+background_exploration: |
+  While your engineers are working on their current tasks, explore the remaining files that need to be implemented next. Your goal is to prepare better instructions for the next round of task assignments.
+
+  <engineers_currently_running>
+  {running_agents_summary}
+  </engineers_currently_running>
+
+  <remaining_tasks_to_explore>
+  {remaining_tasks}
+  </remaining_tasks_to_explore>
+
+  For each remaining file listed above, briefly explore the file in {repo_dir} to understand what needs to be improved.
+
+  DO NOT implement any code or modify any files. Only gather information. Keep your exploration focused and efficient.
+
+
+manager_final_review_all: |
+  All engineers have completed their implementation work. Here is a summary:
+
+  <engineers_summary>
+  {engineers_summary}
+  </engineers_summary>
+
+  <merged_files>
+  {merged_files_summary}
+  </merged_files>
+
+  {unmerged_worktrees_section}
+
+  This is the final review. Please review the merged codebase in {repo_dir} with the following steps:
+
+  1. Merge unmerged work from each engineer's worktree into the main directory. Go to their worktree, check their implementation and merge useful code using `git merge <branch_name>`.
+  2. Verify the integration quality of the merged code. Check that import paths and class/function names are consistent across files.
+  3. Stop once you have finished the review.
