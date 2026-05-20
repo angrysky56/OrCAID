@@ -141,6 +141,14 @@ class SubAgentRunner:
         Returns:
             The fully populated first round prompt string.
         """
+        # Resolve language from task_module if available (used by some prompt templates)
+        language = ""
+        if hasattr(self.task_module, "_resolve_language"):
+            try:
+                language = self.task_module._resolve_language()
+            except Exception:
+                pass
+
         return build_subagent_prompt(
             prompts=self.prompts,
             submission_path=self.subagent.worktree_path
@@ -155,6 +163,7 @@ class SubAgentRunner:
             functions=self.subagent.functions_to_implement,
             test_cmd=getattr(self.subagent, "test_cmd", "pytest"),
             test_dir=getattr(self.subagent, "test_dir", "tests/"),
+            language=language,
         )
 
     def build_followup_prompt(self) -> str:
