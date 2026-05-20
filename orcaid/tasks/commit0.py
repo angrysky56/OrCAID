@@ -3,15 +3,124 @@ python -m tasks.commit0
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .base import TaskModule
+
+# Maps detected language to a suitable Docker base image for custom repos.
+# Official wentingzhao/ benchmark repos keep their own pre-built images.
+_LANGUAGE_IMAGES: dict[str, str] = {
+    "python": "python:3.12-slim",
+    "typescript": "node:22-slim",
+    "javascript": "node:22-slim",
+    "go": "golang:1.22-bookworm",
+    "rust": "rust:1.76-slim",
+    "java": "eclipse-temurin:21-jdk-slim",
+}
+
+# Sentinel files used to identify the primary language of a repository.
+# Listed in priority order — first match wins.
+_LANGUAGE_SENTINELS: list[tuple[str, str]] = [
+    ("Cargo.toml", "rust"),
+    ("go.mod", "go"),
+    ("pom.xml", "java"),
+    ("build.gradle", "java"),
+    ("build.gradle.kts", "java"),
+    ("package.json", "typescript"),   # refined to "javascript" if no .ts files found
+    ("pyproject.toml", "python"),
+    ("setup.py", "python"),
+    ("setup.cfg", "python"),
+    ("requirements.txt", "python"),
+]
+
+# Per-language shell snippets that surface stub / incomplete functions.
+# Each snippet outputs one "path:lineno: func_signature" per match.
+_STUB_PATTERNS: dict[str, str] = {
+    "python": (
+        r"grep -rn '^\s*pass\s*$' --include='*.py' "
+        r"| grep -v '__pycache__' | grep -v '.venv' | grep -v 'site-packages'"
+    ),
+    "typescript": (
+        "grep -rEin 'throw new Error.*not.implemented|TODO|FIXME' "
+        "--include='*.ts' --include='*.tsx' | grep -v 'node_modules' | grep -v '.d.ts'"
+    ),
+    "javascript": (
+        "grep -rEin 'throw new Error.*not.implemented|TODO|FIXME' "
+        "--include='*.js' --include='*.mjs' | grep -v 'node_modules'"
+    ),
+    "go": (
+        r"grep -rEn 'panic\(\"not implemented\"\)|// TODO|// FIXME' "
+        r"--include='*.go' | grep -v '_test.go'"
+    ),
+    "rust": (
+        r"grep -rEn 'todo!\(\)|unimplemented!\(\)|panic!' "
+        r"--include='*.rs' | grep -v '/tests/'"
+    ),
+    "java": (
+        r"grep -rEn 'throw new UnsupportedOperationException|// TODO|// FIXME' "
+        r"--include='*.java' | grep -v '/test/'"
+    ),
+}
+
+
+def _parse_test_output_heuristic(output: str, lang: str) -> tuple[int, int, int]:
+    """Best-effort count of passed/failed/error from raw test output.
+
+    Args:
+        output: Combined stdout+stderr from the test runner.
+        lang:   Detected language.
+
+    Returns:
+        (passed, failed, error) counts — all zero when nothing is parseable.
+    """
+    import re
+    passed = failed = error = 0
+    if lang in ("typescript", "javascript"):
+        # Vitest: "✓ 5 tests passed" / "✗ 2 tests failed"
+        # Jest: "Tests: 3 failed, 5 passed, 8 total"
+        m = re.search(r"(\d+)\s+passed", output)
+        if m:
+            passed = int(m.group(1))
+        m = re.search(r"(\d+)\s+failed", output)
+        if m:
+            failed = int(m.group(1))
+    elif lang == "go":
+        # "ok   github.com/... 0.123s" / "FAIL github.com/... 0.123s"
+        passed = output.count("\nok  ")
+        failed = output.count("\nFAIL ")
+    elif lang == "rust":
+        # "test result: ok. 5 passed; 0 failed"
+        m = re.search(r"(\d+) passed", output)
+        if m:
+            passed = int(m.group(1))
+        m = re.search(r"(\d+) failed", output)
+        if m:
+            failed = int(m.group(1))
+    return passed, failed, error
+
+
+def _default_test_cmd_for_language(lang: str) -> tuple[str, str]:
+    """Return (test_cmd, test_dir) defaults for a given language.
+
+    These are best-effort defaults; the actual test runner is refined at
+    setup time by reading package.json / Cargo.toml / go.mod etc.
+    """
+    defaults: dict[str, tuple[str, str]] = {
+        "python":     ("pytest", "tests/"),
+        "typescript": ("npx vitest run", "src"),
+        "javascript": ("npx jest", "tests/"),
+        "go":         ("go test ./...", ""),
+        "rust":       ("cargo test", ""),
+        "java":       ("mvn test -q", ""),
+    }
+    return defaults.get(lang, ("pytest", "tests/"))
 
 
 @dataclass
 class Commit0Config:
     repo_name: str = "minitorch"
-    base_branch: str = ""  # Empty = auto-detect repo's default branch (pass explicitly to force e.g. "main" or "master")
+    base_branch: str = ""  # Empty = auto-detect repo's default branch
+    language: str = ""     # Empty = auto-detect from repo contents via GitHub API
     docker_image_prefix: str = "docker.io/wentingzhao/"
     docker_image: str = (
         ""  # Override docker image directly (e.g., "docker.io/wentingzhao/minitorch:v0")
@@ -23,28 +132,100 @@ class Commit0Task(TaskModule):
     def __init__(self, config):
         self.config = config
         self.task_data = None
+        self._detected_language: str = ""   # populated by _resolve_language()
 
     def _get_clean_repo_name(self):
-        # Extract repo name from full path/URL and strip any trailing .git
+        """Extract repo name from full path/URL and strip any trailing .git."""
         name = self.config.repo_name.split("/")[-1]
         if name.endswith(".git"):
             name = name[:-4]
         return name
 
+    # ------------------------------------------------------------------
+    # Language detection
+    # ------------------------------------------------------------------
+
+    def _detect_language_from_github(self, repo: str) -> str:
+        """Query the GitHub contents API to identify the repo's primary language.
+
+        Checks sentinel files (Cargo.toml, go.mod, package.json, pyproject.toml …)
+        in root order and returns the first match.  Falls back to 'python' on any
+        error so existing behaviour is preserved.
+
+        Args:
+            repo: 'owner/name' string (trailing .git is stripped automatically).
+
+        Returns:
+            Lowercase language string, e.g. 'python', 'typescript', 'go', 'rust'.
+        """
+        import urllib.request
+
+        if "/" not in repo:
+            return "python"
+
+        parts = repo.split("/")
+        owner, name = parts[-2], parts[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+
+        api_url = f"https://api.github.com/repos/{owner}/{name}/contents/"
+        try:
+            req = urllib.request.Request(
+                api_url,
+                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "OrCAID/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                contents = json.loads(resp.read().decode())
+                root_files = {entry["name"] for entry in contents if entry.get("type") == "file"}
+                for sentinel, lang in _LANGUAGE_SENTINELS:
+                    if sentinel in root_files:
+                        # Distinguish TypeScript vs JavaScript by checking for .ts files
+                        if lang == "typescript" and "tsconfig.json" not in root_files:
+                            # Check for any .ts file listing (heuristic: tsconfig present → TS)
+                            # If absent, keep "typescript" — vitest/ts-node repos often omit it
+                            pass
+                        detected = lang
+                        print(f"[Commit0] Detected language: '{detected}' (sentinel: {sentinel})")
+                        return detected
+        except Exception as exc:
+            print(f"[Commit0] Warning: language detection failed ({exc}), defaulting to 'python'")
+
+        return "python"
+
+    def _resolve_language(self) -> str:
+        """Return the project language: explicit config value or auto-detected."""
+        if self._detected_language:
+            return self._detected_language
+        if self.config.language:
+            self._detected_language = self.config.language.lower()
+        else:
+            self._detected_language = self._detect_language_from_github(self.config.repo_name)
+        return self._detected_language
+
     def get_docker_image(self):
+        """Return the Docker image to use for this repo.
+
+        Priority:
+        1. Explicit ``config.docker_image`` override.
+        2. Official wentingzhao/ benchmark images (pre-built per-repo).
+        3. Language-appropriate slim image detected from repo contents.
+        """
         if self.config.docker_image:
             return self.config.docker_image
 
         repo_lower = self.config.repo_name.lower()
 
-        # If it is an official benchmark repository (starts with wentingzhao/ or doesn't contain /)
+        # Official benchmark repos have pre-built images
         if repo_lower.startswith("wentingzhao/") or "/" not in self.config.repo_name:
             clean_name = repo_lower.split("/")[-1]
             prefix = self.config.docker_image_prefix.rstrip("/")
             return f"{prefix}/{clean_name}:v0".lower()
 
-        # For custom/personal repositories, use python:3.12-slim
-        return "python:3.12-slim"
+        # Custom repos: pick image based on detected language
+        lang = self._resolve_language()
+        image = _LANGUAGE_IMAGES.get(lang, "python:3.12-slim")
+        print(f"[Commit0] Using Docker image '{image}' for language '{lang}'")
+        return image
 
     def get_work_dir(self):
         clean_name = self._get_clean_repo_name()
@@ -78,11 +259,16 @@ class Commit0Task(TaskModule):
         if "/" not in repo_name:
             repo_name = f"wentingzhao/{repo_name}"
 
+        lang = self._resolve_language()
+        test_cmd, test_dir = _default_test_cmd_for_language(lang)
+        print(f"[Commit0] Default test runner for '{lang}': {test_cmd} {test_dir}")
+
         self.task_data = {
             "repo": repo_name,
-            "test_cmd": "pytest",
-            "test_dir": "tests/",
-            "test": {"test_cmd": "pytest", "test_dir": "tests/"},
+            "language": lang,
+            "test_cmd": test_cmd,
+            "test_dir": test_dir,
+            "test": {"test_cmd": test_cmd, "test_dir": test_dir},
         }
         return self.task_data
 
@@ -178,6 +364,46 @@ class Commit0Task(TaskModule):
         print("\n" + "-" * 60)
         print("Step 2: Setup Repository")
         print("-" * 60)
+        lang = self._resolve_language()
+        print(f"[Commit0] Project language: {lang}")
+        self._setup_deps(workspace, work_dir, clean_name, lang)
+
+        # Pre-compute stub/test analysis so the manager prompt has it from iteration 1
+        print("\n" + "-" * 60)
+        print("Step 2b: Initial Analysis (stubs + failing tests)")
+        print("-" * 60)
+        self._initial_analysis = self.get_initial_analysis(workspace)
+
+    # ------------------------------------------------------------------
+    # Language-aware dependency installation
+    # ------------------------------------------------------------------
+
+    def _setup_deps(self, workspace, work_dir: str, clean_name: str, lang: str) -> None:
+        """Install project dependencies and test tooling for the detected language.
+
+        Args:
+            workspace: OpenHands workspace handle.
+            work_dir: Absolute path of the cloned repo inside the container.
+            clean_name: Sanitised repo name (used for Python package verification).
+            lang: Detected language string from ``_resolve_language()``.
+        """
+        if lang == "python":
+            self._setup_python(workspace, work_dir, clean_name)
+        elif lang in ("typescript", "javascript"):
+            self._setup_node(workspace, work_dir, lang)
+        elif lang == "go":
+            self._setup_go(workspace, work_dir)
+        elif lang == "rust":
+            self._setup_rust(workspace, work_dir)
+        elif lang == "java":
+            self._setup_java(workspace, work_dir)
+        else:
+            print(f"[Commit0] Unknown language '{lang}', falling back to Python setup.")
+            self._setup_python(workspace, work_dir, clean_name)
+        print("[Commit0] Workspace setup complete")
+
+    def _setup_python(self, workspace, work_dir: str, clean_name: str) -> None:
+        """Install Python package + pytest tooling."""
         print(f"[Commit0] Installing {clean_name} in dev mode...")
         workspace.execute_command(
             f"python -m pip uninstall -y {clean_name} {clean_name.lower()} 2>&1 | tail -3",
@@ -189,7 +415,6 @@ class Commit0Task(TaskModule):
         if result.exit_code != 0:
             print(f"[Commit0] Warning: pip install -e . failed: {result.stderr}")
 
-        # Verify package import
         verify_cmd = (
             f"cd {work_dir} && "
             f"python -c 'import {clean_name}; print(\"{clean_name} imported successfully\")' 2>/dev/null || "
@@ -201,8 +426,7 @@ class Commit0Task(TaskModule):
         else:
             print("[Commit0] Warning: Package import verification failed")
 
-        # Install commit0 + pytest plugins
-        print("[Commit0] Installing commit0 and pytest plugins...")
+        print("[Commit0] Installing pytest plugins...")
         uv = workspace.execute_command(
             f"cd {work_dir} && /root/.cargo/bin/uv pip install commit0 2>&1 | tail -5",
             timeout=300,
@@ -216,7 +440,148 @@ class Commit0Task(TaskModule):
             f"cd {work_dir} && python -m pip install pytest-json-report pytest-cov 2>&1 | tail -5",
             timeout=300,
         )
-        print("[Commit0] Workspace setup complete")
+
+    def _setup_node(self, workspace, work_dir: str, lang: str) -> None:
+        """Install Node/TypeScript dependencies and detect the test runner."""
+        print("[Commit0] Installing Node.js dependencies...")
+        # Prefer pnpm → yarn → npm
+        for pkg_mgr, lock in (
+            ("pnpm", "pnpm-lock.yaml"),
+            ("yarn", "yarn.lock"),
+            ("npm", "package-lock.json"),
+        ):
+            probe = workspace.execute_command(
+                f"test -f {work_dir}/{lock} && echo yes || echo no", timeout=10
+            )
+            if probe.stdout.strip() == "yes":
+                install_cmd = f"cd {work_dir} && {pkg_mgr} install --frozen-lockfile 2>&1 | tail -10"
+                break
+        else:
+            install_cmd = f"cd {work_dir} && npm install 2>&1 | tail -10"
+
+        result = workspace.execute_command(install_cmd, timeout=600)
+        if result.exit_code != 0:
+            print(f"[Commit0] Warning: npm/pnpm/yarn install failed: {result.stderr}")
+
+        # Detect test runner from package.json scripts and update task_data
+        pkg_result = workspace.execute_command(
+            f"cat {work_dir}/package.json 2>/dev/null", timeout=10
+        )
+        if pkg_result.exit_code == 0:
+            try:
+                pkg = json.loads(pkg_result.stdout)
+                scripts = pkg.get("scripts", {})
+                deps = {**pkg.get("devDependencies", {}), **pkg.get("dependencies", {})}
+                if "vitest" in deps or "vitest" in scripts.get("test", ""):
+                    test_cmd, test_dir = "npx vitest run", "src"
+                elif "jest" in deps or "jest" in scripts.get("test", ""):
+                    test_cmd, test_dir = "npx jest --json", "."
+                elif "mocha" in deps:
+                    test_cmd, test_dir = "npx mocha", "test"
+                else:
+                    # Fall back to the npm test script
+                    test_cmd, test_dir = "npm test", ""
+                print(f"[Commit0] Detected test runner: {test_cmd}")
+                if self.task_data:
+                    self.task_data["test_cmd"] = test_cmd
+                    self.task_data["test_dir"] = test_dir
+                    self.task_data["test"] = {"test_cmd": test_cmd, "test_dir": test_dir}
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Ensure TypeScript compiler is available
+        workspace.execute_command(
+            f"cd {work_dir} && npx tsc --version 2>&1 || npm install -g typescript 2>&1 | tail -5",
+            timeout=120,
+        )
+
+    def _setup_go(self, workspace, work_dir: str) -> None:
+        """Download Go module dependencies."""
+        print("[Commit0] Downloading Go modules...")
+        result = workspace.execute_command(
+            f"cd {work_dir} && go mod download 2>&1 | tail -10", timeout=300
+        )
+        if result.exit_code != 0:
+            print(f"[Commit0] Warning: go mod download failed: {result.stderr}")
+        workspace.execute_command(f"cd {work_dir} && go build ./... 2>&1 | tail -5", timeout=300)
+
+    def _setup_rust(self, workspace, work_dir: str) -> None:
+        """Pre-fetch Rust crates."""
+        print("[Commit0] Fetching Rust dependencies...")
+        result = workspace.execute_command(
+            f"cd {work_dir} && cargo fetch 2>&1 | tail -10", timeout=600
+        )
+        if result.exit_code != 0:
+            print(f"[Commit0] Warning: cargo fetch failed: {result.stderr}")
+
+    def _setup_java(self, workspace, work_dir: str) -> None:
+        """Resolve Java dependencies (Maven or Gradle)."""
+        print("[Commit0] Resolving Java dependencies...")
+        mvn = workspace.execute_command(f"test -f {work_dir}/pom.xml && echo yes || echo no", timeout=10)
+        if mvn.stdout.strip() == "yes":
+            workspace.execute_command(
+                f"cd {work_dir} && mvn dependency:resolve -q 2>&1 | tail -10", timeout=600
+            )
+        else:
+            workspace.execute_command(
+                f"cd {work_dir} && ./gradlew dependencies -q 2>&1 | tail -10", timeout=600
+            )
+
+    # ------------------------------------------------------------------
+    # Proactive stub + failing-test context for the manager
+    # ------------------------------------------------------------------
+
+    def get_initial_analysis(self, workspace) -> str:
+        """Run a pre-scan in the container and return a concise stub/test summary.
+
+        This summary is injected into the manager's first message so it can
+        immediately prioritise work without exhaustively reading every file.
+
+        Returns a multi-line string with two sections:
+        - FAILING TESTS: which tests currently fail and the first error line
+        - STUB CANDIDATES: files/line-numbers that contain empty/placeholder functions
+        """
+        if self.task_data is None:
+            return ""
+        work_dir = self.get_work_dir()
+        lang = self._resolve_language()
+        lines: list[str] = []
+
+        # 1. Run tests briefly to surface failures
+        test_info = self.task_data.get("test", {})
+        test_cmd = test_info.get("test_cmd", self.task_data.get("test_cmd", "pytest"))
+        test_dir = test_info.get("test_dir", self.task_data.get("test_dir", "tests/"))
+        if test_cmd.strip().startswith("pytest"):
+            quick_test = (
+                f"cd {work_dir} && "
+                f"export PYTHONPATH={work_dir}/src:{work_dir}:$PYTHONPATH && "
+                f"python -m {test_cmd} {test_dir} "
+                f"--tb=no -q --no-header 2>&1 | head -40"
+            )
+        else:
+            quick_test = f"cd {work_dir} && {test_cmd} {test_dir} 2>&1 | head -40"
+
+        test_result = workspace.execute_command(quick_test, timeout=120)
+        if test_result.exit_code == 0:
+            lines.append("FAILING TESTS: none — all tests pass on clean clone.")
+        else:
+            lines.append("FAILING TESTS (initial run on clean clone):")
+            lines.append(test_result.stdout.strip() or test_result.stderr.strip() or "(no output)")
+
+        # 2. Scan for stubs / empty bodies
+        stub_cmd = _STUB_PATTERNS.get(lang, _STUB_PATTERNS["python"])
+        stub_result = workspace.execute_command(
+            f"cd {work_dir} && {stub_cmd} 2>/dev/null | head -60", timeout=30
+        )
+        if stub_result.stdout.strip():
+            lines.append(f"\nSTUB CANDIDATES ({lang}):")
+            lines.append(stub_result.stdout.strip())
+        else:
+            lines.append(f"\nSTUB CANDIDATES: none found with standard patterns for {lang}.")
+
+        summary = "\n".join(lines)
+        print(f"[Commit0] Initial analysis complete ({len(summary)} chars)")
+        return summary
 
     def evaluate(self, workspace):
         if self.task_data is None:
@@ -236,46 +601,62 @@ class Commit0Task(TaskModule):
         )
 
         # Determine test command from task data
+        lang = self._resolve_language()
         test_info = self.task_data.get("test", {})
         test_cmd = test_info.get("test_cmd", self.task_data.get("test_cmd", "pytest"))
         test_dir = test_info.get("test_dir", self.task_data.get("test_dir", "tests/"))
-        if test_cmd.strip().startswith("pytest"):
-            test_cmd = "python -m " + test_cmd.strip()
 
-        full_cmd = (
-            f"cd {work_dir} && "
-            f"export PYTHONPATH={work_dir}/src:{work_dir}:$PYTHONPATH && "
-            f"{test_cmd} "
-            f"--json-report --json-report-file=report.json "
-            f"--continue-on-collection-errors "
-            f"{test_dir} > test_output.txt 2>&1"
-        )
+        if lang == "python" or test_cmd.strip().startswith("pytest"):
+            # Python path: pytest with JSON reporting
+            if test_cmd.strip().startswith("pytest"):
+                test_cmd = "python -m " + test_cmd.strip()
+            full_cmd = (
+                f"cd {work_dir} && "
+                f"export PYTHONPATH={work_dir}/src:{work_dir}:$PYTHONPATH && "
+                f"{test_cmd} "
+                f"--json-report --json-report-file=report.json "
+                f"--continue-on-collection-errors "
+                f"{test_dir} > test_output.txt 2>&1"
+            )
+        else:
+            # Non-Python: run test command as-is, capture output
+            full_cmd = (
+                f"cd {work_dir} && "
+                f"{test_cmd} {test_dir} > test_output.txt 2>&1"
+            )
+
         print(f"[Commit0] Running: {test_cmd} {test_dir}")
         workspace.execute_command(full_cmd, timeout=6000)
 
-        # Read results
+        # Read output
         output_result = workspace.execute_command(
             f"cat {work_dir}/test_output.txt", timeout=60
         )
         test_output = output_result.stdout if output_result.exit_code == 0 else ""
 
-        report_result = workspace.execute_command(
-            f"cat {work_dir}/report.json", timeout=60
-        )
-        report_json = report_result.stdout if report_result.exit_code == 0 else "{}"
-
+        # Parse results — pytest JSON for Python, heuristic parse for others
         passed = failed = error = 0
-        try:
-            report_data = json.loads(report_json)
-            summary = report_data.get("summary", {})
-            passed = summary.get("passed", 0)
-            failed = summary.get("failed", 0)
-            error = summary.get("error", 0)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"[Commit0] Warning: could not parse report.json: {e}")
+        report_json = "{}"
+
+        if lang == "python" or "pytest" in test_cmd:
+            report_result = workspace.execute_command(
+                f"cat {work_dir}/report.json", timeout=60
+            )
+            report_json = report_result.stdout if report_result.exit_code == 0 else "{}"
+            try:
+                report_data = json.loads(report_json)
+                summary = report_data.get("summary", {})
+                passed = summary.get("passed", 0)
+                failed = summary.get("failed", 0)
+                error = summary.get("error", 0)
+            except (json.JSONDecodeError, Exception) as e:
+                print(f"[Commit0] Warning: could not parse report.json: {e}")
+        else:
+            # Heuristic: count pass/fail from output text
+            passed, failed, error = _parse_test_output_heuristic(test_output, lang)
 
         print(
-            f"[Commit0] Pytest results: {passed} passed, {failed} failed, {error} error"
+            f"[Commit0] Test results: {passed} passed, {failed} failed, {error} error"
         )
 
         return {
@@ -290,6 +671,7 @@ class Commit0Task(TaskModule):
     def get_prompt_format_args(self, config):
         work_dir = self.get_work_dir()
         workspace_dir_name = work_dir.split("/")[-1]
+        lang = self._resolve_language()
         test_info = self.task_data.get("test", {}) if self.task_data else {}
         test_cmd = test_info.get(
             "test_cmd",
@@ -299,14 +681,20 @@ class Commit0Task(TaskModule):
             "test_dir",
             self.task_data.get("test_dir", "tests/") if self.task_data else "tests/",
         )
-        if test_cmd.strip().startswith("pytest"):
+        if lang == "python" and test_cmd.strip().startswith("pytest"):
             test_cmd = "python -m " + test_cmd.strip()
+
+        # initial_analysis is pre-computed during setup and stored for injection
+        initial_analysis = getattr(self, "_initial_analysis", "")
+
         return {
             "max_agents": config.max_subagents,
             "max_rounds": config.max_rounds_chat,
             "workspace_dir_name": workspace_dir_name,
             "test_cmd": test_cmd,
             "test_dir": test_dir,
+            "language": lang,
+            "initial_analysis": initial_analysis,
         }
 
     # ---- Manager integration methods ----
