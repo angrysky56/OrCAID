@@ -457,12 +457,15 @@ class OutputLogger:
 class TeeLogger:
 
     ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+    # Box-drawing characters that pollute log files
+    BOX_CHARS_RE = re.compile(r"[╠-╩╬╭╮╯╰-╳]")
 
-    def __init__(self, log_file_path, mode="w"):
+    def __init__(self, log_file_path, mode="w", suppress_boxed=False):
         self.terminal = sys.stdout
         self.log_file = None
         self.log_file_path = log_file_path
         self.mode = mode
+        self.suppress_boxed = suppress_boxed
 
     def __enter__(self):
         Path(self.log_file_path).parent.mkdir(parents=True, exist_ok=True)
@@ -481,6 +484,9 @@ class TeeLogger:
         self.terminal.write(message)
         if self.log_file:
             clean = self.ANSI_ESCAPE_RE.sub("", message)
+            # Remove box-drawing characters that make logs unparseable
+            if self.suppress_boxed:
+                clean = self.BOX_CHARS_RE.sub("", clean)
             self.log_file.write(clean)
             self.log_file.flush()
 
@@ -921,10 +927,21 @@ def fallback_delegation(analysis_result, max_subagents):
         return None
 
 
+# Maximum length for subagent instruction to prevent unfocused tasks
+MAX_INSTRUCTION_LENGTH = 500
+
+
 def build_subagent_prompt(prompts, **kwargs):
     # Join functions list into comma-separated string for commit0
     if "functions" in kwargs and isinstance(kwargs["functions"], list):
         kwargs["functions"] = ", ".join(kwargs["functions"])
+
+    # Truncate instruction to MAX_INSTRUCTION_LENGTH to keep subagent focused
+    if "instruction" in kwargs and kwargs["instruction"]:
+        instruction = kwargs["instruction"]
+        if len(instruction) > MAX_INSTRUCTION_LENGTH:
+            kwargs["instruction"] = instruction[:MAX_INSTRUCTION_LENGTH] + "..."
+            print(f"[Utils] WARNING: Instruction truncated from {len(instruction)} to {MAX_INSTRUCTION_LENGTH} chars")
 
     if prompts and "subagent_prompt" in prompts:
         return prompts["subagent_prompt"].format(**kwargs)

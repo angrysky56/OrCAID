@@ -946,7 +946,9 @@ async def run_workflow(task, workflow_config, task_module, multi_agent=True, **k
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = str(Path(workflow_config.output_dir) / f"run_{timestamp}.log")
 
-    with TeeLogger(log_path):
+    # Enable suppress_boxed=True to remove ╭──╮ box-drawing characters from logs
+    # This makes run_*.log parseable while outputs.jsonl remains the source of truth
+    with TeeLogger(log_path, suppress_boxed=True):
         return await run_workflow_inner(
             task,
             workflow_config,

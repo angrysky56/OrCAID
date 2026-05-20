@@ -826,6 +826,14 @@ class Manager(GitMixin, ExplorationMixin, ReviewMixin, AssignmentMixin):
                 self.config.max_subagents,
             ) or {"delegation_plan": {}}
 
+        # DEBUG: Log delegation_json structure before saving
+        if delegation_json.get("delegation_plan"):
+            first_round = delegation_json.get("delegation_plan", {}).get("first_round", {})
+            num_tasks = len(first_round.get("tasks", []))
+            self.log(f"DEBUG: delegation_json has {num_tasks} tasks in first_round")
+        else:
+            self.log("DEBUG: delegation_json delegation_plan is empty or missing")
+
         self.delegation_plan = build_delegation_plan(delegation_json)
         output_path = Path(self.config.output_dir) / "delegations.json"
         with open(output_path, "w", encoding="utf-8") as f:
