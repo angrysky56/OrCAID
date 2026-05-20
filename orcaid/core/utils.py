@@ -37,6 +37,8 @@ from orcaid.config import (
 from orcaid.tasks import (
     Commit0Config,
     Commit0Task,
+    Paper2CodeConfig,
+    Paper2CodeTask,
     PaperbenchConfig,
     PaperbenchTask,
     SelfImproveConfig,
@@ -1342,9 +1344,19 @@ def build_task_module(task, **kwargs):
             },
         )
         return SelfImproveTask(SelfImproveConfig(**init))
+    elif task == "paper2code":
+        init = filter_kwargs(
+            kwargs,
+            {
+                "repo_path": "repo_path",
+                "paper_url": "paper_url",
+                "output_dir": "output_dir",
+            },
+        )
+        return Paper2CodeTask(Paper2CodeConfig(**init))
     else:
         raise ValueError(
-            f"Unknown task: {task}. Available: commit0, paperbench, self_improve"
+            f"Unknown task: {task}. Available: commit0, paper2code, paperbench, self_improve"
         )
 
 

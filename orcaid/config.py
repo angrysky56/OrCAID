@@ -104,6 +104,13 @@ class AnalysisResult:
 
 
 @dataclass
+class Paper2CodeConfig:
+    paper_url: str = ""
+    output_dir: str = ""
+    docker_image: str = "python:3.12-slim"
+
+
+@dataclass
 class SubAgentTask:
     engineer_id: str = ""
     task_id: str = ""

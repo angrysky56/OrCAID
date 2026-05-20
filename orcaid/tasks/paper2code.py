@@ -8,19 +8,20 @@ as an OrCAID task so it benefits from the delegation + verification loop.
 from .base import TaskModule
 
 class Paper2CodeConfig:
+    repo_path: str = ""
     paper_url: str = ""
     output_dir: str = ""
 
 class Paper2CodeTask(TaskModule):
     def get_docker_image(self):
-        return "python:3.12-slim"  # Paper2Code uses Python, not minitorch
+        return "python:3.12-slim"
 
     def get_work_dir(self):
         return "/workspace/submission"
 
     def get_workspace_config(self):
         return {
-            "server_image": "python:3.12-slim",
+            "base_image": "python:3.12-slim",
         }
 
     def load_task_data(self):

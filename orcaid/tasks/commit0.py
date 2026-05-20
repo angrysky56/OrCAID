@@ -330,7 +330,7 @@ class Commit0Task(TaskModule):
         repo = self.task_data["repo"]
         clean_name = self._get_clean_repo_name()
 
-        # Step 1: Clone Repository
+        # Step 1: Clone Repository (or copy if local path)
         print("\n" + "-" * 60)
         print("Step 1: Clone Repository")
         print("-" * 60)
@@ -338,27 +338,42 @@ class Commit0Task(TaskModule):
 
         repo_url = repo
         if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
-            repo_url = f"https://github.com/{repo}"
-            if not repo_url.endswith(".git"):
-                repo_url += ".git"
+            # Local path — copy directory into the container instead of cloning
+            import os
+            local_path = repo
+            if not os.path.isabs(local_path):
+                raise ValueError(f"Local repo path must be absolute: {local_path}")
+            print(f"[Commit0] Using local repo path: {local_path}")
+            copy_cmd = f"cp -r {local_path} {work_dir}"
+            result = workspace.execute_command(copy_cmd, timeout=600)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to copy local repo: {result.stderr}")
+            # Create a working branch
+            branch_cmd = f"cd {work_dir} && git checkout -b openhands 2>/dev/null || git checkout -b openhands || true"
+            workspace.execute_command(branch_cmd, timeout=600)
+        else:
+            if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
+                repo_url = f"https://github.com/{repo}"
+                if not repo_url.endswith(".git"):
+                    repo_url += ".git"
 
-        base_branch = self._resolve_base_branch(repo)
-        print(f"[Commit0] Using branch: '{base_branch}'")
+            base_branch = self._resolve_base_branch(repo)
+            print(f"[Commit0] Using branch: '{base_branch}'")
 
-        clone_cmd = (
-            f"cd /workspace && "
-            f"git clone --depth 1 -b {base_branch} "
-            f"{repo_url} {clean_name}_repo"
-        )
-        result = workspace.execute_command(clone_cmd, timeout=600)
-        if result.exit_code != 0:
-            raise RuntimeError(f"Failed to clone repo: {result.stderr}")
+            clone_cmd = (
+                f"cd /workspace && "
+                f"git clone --depth 1 -b {base_branch} "
+                f"{repo_url} {clean_name}_repo"
+            )
+            result = workspace.execute_command(clone_cmd, timeout=600)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to clone repo: {result.stderr}")
 
-        # Create a working branch (matches official OpenHands benchmark)
-        branch_cmd = f"cd {work_dir} && git checkout -b openhands"
-        result = workspace.execute_command(branch_cmd, timeout=600)
-        if result.exit_code != 0:
-            raise RuntimeError(f"Failed to create branch: {result.stderr}")
+            # Create a working branch (matches official OpenHands benchmark)
+            branch_cmd = f"cd {work_dir} && git checkout -b openhands"
+            result = workspace.execute_command(branch_cmd, timeout=600)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to create branch: {result.stderr}")
 
         # Step 2: Setup Repository
         print("\n" + "-" * 60)
