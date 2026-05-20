@@ -3,7 +3,7 @@ python -m tasks.commit0
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .base import TaskModule
 
@@ -26,7 +26,7 @@ _LANGUAGE_SENTINELS: list[tuple[str, str]] = [
     ("pom.xml", "java"),
     ("build.gradle", "java"),
     ("build.gradle.kts", "java"),
-    ("package.json", "typescript"),   # refined to "javascript" if no .ts files found
+    ("package.json", "typescript"),  # refined to "javascript" if no .ts files found
     ("pyproject.toml", "python"),
     ("setup.py", "python"),
     ("setup.cfg", "python"),
@@ -74,6 +74,7 @@ def _parse_test_output_heuristic(output: str, lang: str) -> tuple[int, int, int]
         (passed, failed, error) counts — all zero when nothing is parseable.
     """
     import re
+
     passed = failed = error = 0
     if lang in ("typescript", "javascript"):
         # Vitest: "✓ 5 tests passed" / "✗ 2 tests failed"
@@ -106,12 +107,12 @@ def _default_test_cmd_for_language(lang: str) -> tuple[str, str]:
     setup time by reading package.json / Cargo.toml / go.mod etc.
     """
     defaults: dict[str, tuple[str, str]] = {
-        "python":     ("pytest", "tests/"),
+        "python": ("pytest", "tests/"),
         "typescript": ("npx vitest run", "src"),
         "javascript": ("npx jest", "tests/"),
-        "go":         ("go test ./...", ""),
-        "rust":       ("cargo test", ""),
-        "java":       ("mvn test -q", ""),
+        "go": ("go test ./...", ""),
+        "rust": ("cargo test", ""),
+        "java": ("mvn test -q", ""),
     }
     return defaults.get(lang, ("pytest", "tests/"))
 
@@ -120,7 +121,7 @@ def _default_test_cmd_for_language(lang: str) -> tuple[str, str]:
 class Commit0Config:
     repo_name: str = "minitorch"
     base_branch: str = ""  # Empty = auto-detect repo's default branch
-    language: str = ""     # Empty = auto-detect from repo contents via GitHub API
+    language: str = ""  # Empty = auto-detect from repo contents via GitHub API
     docker_image_prefix: str = "docker.io/wentingzhao/"
     docker_image: str = (
         ""  # Override docker image directly (e.g., "docker.io/wentingzhao/minitorch:v0")
@@ -132,7 +133,7 @@ class Commit0Task(TaskModule):
     def __init__(self, config):
         self.config = config
         self.task_data = None
-        self._detected_language: str = ""   # populated by _resolve_language()
+        self._detected_language: str = ""  # populated by _resolve_language()
 
     def _get_clean_repo_name(self):
         """Extract repo name from full path/URL and strip any trailing .git."""
@@ -172,11 +173,16 @@ class Commit0Task(TaskModule):
         try:
             req = urllib.request.Request(
                 api_url,
-                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "OrCAID/1.0"},
+                headers={
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "OrCAID/1.0",
+                },
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 contents = json.loads(resp.read().decode())
-                root_files = {entry["name"] for entry in contents if entry.get("type") == "file"}
+                root_files = {
+                    entry["name"] for entry in contents if entry.get("type") == "file"
+                }
                 for sentinel, lang in _LANGUAGE_SENTINELS:
                     if sentinel in root_files:
                         # Distinguish TypeScript vs JavaScript by checking for .ts files
@@ -185,10 +191,14 @@ class Commit0Task(TaskModule):
                             # If absent, keep "typescript" — vitest/ts-node repos often omit it
                             pass
                         detected = lang
-                        print(f"[Commit0] Detected language: '{detected}' (sentinel: {sentinel})")
+                        print(
+                            f"[Commit0] Detected language: '{detected}' (sentinel: {sentinel})"
+                        )
                         return detected
         except Exception as exc:
-            print(f"[Commit0] Warning: language detection failed ({exc}), defaulting to 'python'")
+            print(
+                f"[Commit0] Warning: language detection failed ({exc}), defaulting to 'python'"
+            )
 
         return "python"
 
@@ -199,7 +209,9 @@ class Commit0Task(TaskModule):
         if self.config.language:
             self._detected_language = self.config.language.lower()
         else:
-            self._detected_language = self._detect_language_from_github(self.config.repo_name)
+            self._detected_language = self._detect_language_from_github(
+                self.config.repo_name
+            )
         return self._detected_language
 
     def get_docker_image(self):
@@ -298,15 +310,22 @@ class Commit0Task(TaskModule):
         try:
             req = urllib.request.Request(
                 api_url,
-                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "OrCAID/1.0"},
+                headers={
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "OrCAID/1.0",
+                },
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
                 branch = data.get("default_branch", "main")
-                print(f"[Commit0] Detected default branch: '{branch}' for {owner}/{name}")
+                print(
+                    f"[Commit0] Detected default branch: '{branch}' for {owner}/{name}"
+                )
                 return branch
         except Exception as exc:
-            print(f"[Commit0] Warning: could not detect default branch ({exc}), falling back to 'main'")
+            print(
+                f"[Commit0] Warning: could not detect default branch ({exc}), falling back to 'main'"
+            )
             return "main"
 
     def _resolve_base_branch(self, repo: str) -> str:
@@ -337,12 +356,11 @@ class Commit0Task(TaskModule):
         print(f"[Commit0] Cloning {repo}...")
 
         repo_url = repo
-        if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
-            # Local path — copy directory into the container instead of cloning
+        if repo_url.startswith("/"):
+            # Absolute local path — copy directory into the container instead of cloning
             import os
+
             local_path = repo
-            if not os.path.isabs(local_path):
-                raise ValueError(f"Local repo path must be absolute: {local_path}")
             print(f"[Commit0] Using local repo path: {local_path}")
             copy_cmd = f"cp -r {local_path} {work_dir}"
             result = workspace.execute_command(copy_cmd, timeout=600)
@@ -352,7 +370,9 @@ class Commit0Task(TaskModule):
             branch_cmd = f"cd {work_dir} && git checkout -b openhands 2>/dev/null || git checkout -b openhands || true"
             workspace.execute_command(branch_cmd, timeout=600)
         else:
-            if not repo_url.startswith("http://") and not repo_url.startswith("https://"):
+            if not repo_url.startswith("http://") and not repo_url.startswith(
+                "https://"
+            ):
                 repo_url = f"https://github.com/{repo}"
                 if not repo_url.endswith(".git"):
                     repo_url += ".git"
@@ -500,7 +520,10 @@ class Commit0Task(TaskModule):
                 if self.task_data:
                     self.task_data["test_cmd"] = test_cmd
                     self.task_data["test_dir"] = test_dir
-                    self.task_data["test"] = {"test_cmd": test_cmd, "test_dir": test_dir}
+                    self.task_data["test"] = {
+                        "test_cmd": test_cmd,
+                        "test_dir": test_dir,
+                    }
             except (json.JSONDecodeError, KeyError):
                 pass
 
@@ -518,7 +541,9 @@ class Commit0Task(TaskModule):
         )
         if result.exit_code != 0:
             print(f"[Commit0] Warning: go mod download failed: {result.stderr}")
-        workspace.execute_command(f"cd {work_dir} && go build ./... 2>&1 | tail -5", timeout=300)
+        workspace.execute_command(
+            f"cd {work_dir} && go build ./... 2>&1 | tail -5", timeout=300
+        )
 
     def _setup_rust(self, workspace, work_dir: str) -> None:
         """Pre-fetch Rust crates."""
@@ -532,14 +557,18 @@ class Commit0Task(TaskModule):
     def _setup_java(self, workspace, work_dir: str) -> None:
         """Resolve Java dependencies (Maven or Gradle)."""
         print("[Commit0] Resolving Java dependencies...")
-        mvn = workspace.execute_command(f"test -f {work_dir}/pom.xml && echo yes || echo no", timeout=10)
+        mvn = workspace.execute_command(
+            f"test -f {work_dir}/pom.xml && echo yes || echo no", timeout=10
+        )
         if mvn.stdout.strip() == "yes":
             workspace.execute_command(
-                f"cd {work_dir} && mvn dependency:resolve -q 2>&1 | tail -10", timeout=600
+                f"cd {work_dir} && mvn dependency:resolve -q 2>&1 | tail -10",
+                timeout=600,
             )
         else:
             workspace.execute_command(
-                f"cd {work_dir} && ./gradlew dependencies -q 2>&1 | tail -10", timeout=600
+                f"cd {work_dir} && ./gradlew dependencies -q 2>&1 | tail -10",
+                timeout=600,
             )
 
     # ------------------------------------------------------------------
@@ -596,10 +625,16 @@ class Commit0Task(TaskModule):
             quick_test = f"cd {work_dir} && {test_cmd} {test_dir} 2>&1 | head -60"
 
         test_out = _run(quick_test, timeout=120)
-        if "passed" in test_out and "failed" not in test_out and "error" not in test_out.lower():
+        if (
+            "passed" in test_out
+            and "failed" not in test_out
+            and "error" not in test_out.lower()
+        ):
             sections.append("### FAILING TESTS\nnone — all tests pass on clean clone.")
         else:
-            sections.append(f"### FAILING TESTS (initial run)\n{test_out or '(no output)'}")
+            sections.append(
+                f"### FAILING TESTS (initial run)\n{test_out or '(no output)'}"
+            )
 
         # ------------------------------------------------------------------
         # 2. IMPORT ERRORS (Python only)
@@ -759,7 +794,11 @@ class Commit0Task(TaskModule):
                 incomplete_parts.append(f"Empty function bodies:\n{empty_fn_out}")
             sections.append(
                 "### INCOMPLETE CODE\n"
-                + ("\n".join(incomplete_parts) if incomplete_parts else "none detected.")
+                + (
+                    "\n".join(incomplete_parts)
+                    if incomplete_parts
+                    else "none detected."
+                )
             )
 
         # ------------------------------------------------------------------
@@ -772,7 +811,7 @@ class Commit0Task(TaskModule):
                 f"find . -name '*.py' -not -path '*/.venv/*' -not -path '*/__pycache__/*' "
                 f"-not -path '*/site-packages/*' "
                 f"| xargs -I{{}} dirname {{}} | sort -u "
-                f"| while read d; do [ ! -f \"$d/__init__.py\" ] && echo \"$d\"; done "
+                f'| while read d; do [ ! -f "$d/__init__.py" ] && echo "$d"; done '
                 f"| grep -v '^\\.\\?$' | head -20",
                 timeout=20,
             )
@@ -795,11 +834,17 @@ class Commit0Task(TaskModule):
                 )
             sections.append(
                 "### STRUCTURAL ISSUES\n"
-                + ("\n".join(structural_parts) if structural_parts else "none detected.")
+                + (
+                    "\n".join(structural_parts)
+                    if structural_parts
+                    else "none detected."
+                )
             )
 
         summary = "\n\n".join(sections)
-        print(f"[Commit0] Initial analysis complete ({len(summary)} chars, {len(sections)} sections)")
+        print(
+            f"[Commit0] Initial analysis complete ({len(summary)} chars, {len(sections)} sections)"
+        )
         return summary
 
     def evaluate(self, workspace):
@@ -840,8 +885,7 @@ class Commit0Task(TaskModule):
         else:
             # Non-Python: run test command as-is, capture output
             full_cmd = (
-                f"cd {work_dir} && "
-                f"{test_cmd} {test_dir} > test_output.txt 2>&1"
+                f"cd {work_dir} && " f"{test_cmd} {test_dir} > test_output.txt 2>&1"
             )
 
         print(f"[Commit0] Running: {test_cmd} {test_dir}")
