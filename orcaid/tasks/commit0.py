@@ -532,55 +532,259 @@ class Commit0Task(TaskModule):
     # ------------------------------------------------------------------
 
     def get_initial_analysis(self, workspace) -> str:
-        """Run a pre-scan in the container and return a concise stub/test summary.
+        """Run a comprehensive pre-scan and return a prioritised code health report.
 
-        This summary is injected into the manager's first message so it can
-        immediately prioritise work without exhaustively reading every file.
+        Goes well beyond stub detection: surfaces broken imports, TODO/FIXME bugs,
+        linter errors, empty/incomplete functions, and structural issues — so the
+        manager has real actionable work even when no explicit `pass` stubs exist.
 
-        Returns a multi-line string with two sections:
-        - FAILING TESTS: which tests currently fail and the first error line
-        - STUB CANDIDATES: files/line-numbers that contain empty/placeholder functions
+        Sections (highest → lowest priority):
+          1. FAILING TESTS   — which tests fail and the first error / traceback line
+          2. IMPORT ERRORS   — modules that cannot be imported (PYTHONPATH, missing deps)
+          3. LINTER ISSUES   — ruff/flake8 errors: undefined names, unused imports, etc.
+          4. TODO/FIXME BUGS — inline markers with surrounding context
+          5. STUBS           — explicit placeholder functions (pass, todo!(), etc.)
+          6. INCOMPLETE CODE — raise NotImplementedError, empty function bodies, ...
+          7. STRUCTURAL      — mismatched file/module names, missing __init__.py, etc.
+
+        Returns:
+            A multi-line string suitable for injection into the manager prompt.
         """
         if self.task_data is None:
             return ""
         work_dir = self.get_work_dir()
         lang = self._resolve_language()
-        lines: list[str] = []
+        sections: list[str] = []
 
-        # 1. Run tests briefly to surface failures
+        # ------------------------------------------------------------------
+        # Helper: run a command and return stripped stdout (or fallback text)
+        # ------------------------------------------------------------------
+        def _run(cmd: str, timeout: int = 30) -> str:
+            r = workspace.execute_command(cmd, timeout=timeout)
+            return (r.stdout or "").strip()
+
+        # ------------------------------------------------------------------
+        # 1. FAILING TESTS
+        # ------------------------------------------------------------------
         test_info = self.task_data.get("test", {})
         test_cmd = test_info.get("test_cmd", self.task_data.get("test_cmd", "pytest"))
         test_dir = test_info.get("test_dir", self.task_data.get("test_dir", "tests/"))
-        if test_cmd.strip().startswith("pytest"):
+
+        if lang == "python" or test_cmd.strip().startswith("pytest"):
             quick_test = (
                 f"cd {work_dir} && "
-                f"export PYTHONPATH={work_dir}/src:{work_dir}:$PYTHONPATH && "
-                f"python -m {test_cmd} {test_dir} "
-                f"--tb=no -q --no-header 2>&1 | head -40"
+                f"export PYTHONPATH={work_dir}/src:{work_dir}:{work_dir}/codes:$PYTHONPATH && "
+                f"python -m {test_cmd if test_cmd.startswith('pytest') else test_cmd} "
+                f"{test_dir} --tb=line -q --no-header 2>&1 | head -60"
             )
         else:
-            quick_test = f"cd {work_dir} && {test_cmd} {test_dir} 2>&1 | head -40"
+            quick_test = f"cd {work_dir} && {test_cmd} {test_dir} 2>&1 | head -60"
 
-        test_result = workspace.execute_command(quick_test, timeout=120)
-        if test_result.exit_code == 0:
-            lines.append("FAILING TESTS: none — all tests pass on clean clone.")
+        test_out = _run(quick_test, timeout=120)
+        if "passed" in test_out and "failed" not in test_out and "error" not in test_out.lower():
+            sections.append("### FAILING TESTS\nnone — all tests pass on clean clone.")
         else:
-            lines.append("FAILING TESTS (initial run on clean clone):")
-            lines.append(test_result.stdout.strip() or test_result.stderr.strip() or "(no output)")
+            sections.append(f"### FAILING TESTS (initial run)\n{test_out or '(no output)'}")
 
-        # 2. Scan for stubs / empty bodies
+        # ------------------------------------------------------------------
+        # 2. IMPORT ERRORS (Python only)
+        # ------------------------------------------------------------------
+        if lang == "python":
+            import_check = (
+                f"cd {work_dir} && "
+                f"find . -name '*.py' -not -path '*/.venv/*' -not -path '*/site-packages/*' "
+                f"-not -path '*/__pycache__/*' | head -40 | "
+                f"xargs -I{{}} python3 -c \"import ast, sys; ast.parse(open('{{}}').read())\" "
+                f"2>&1 | grep -v '^$' | head -20"
+            )
+            syntax_out = _run(import_check, timeout=30)
+
+            # Also try to import top-level packages
+            pkgs = _run(
+                f"cd {work_dir} && "
+                f"find . -maxdepth 2 -name '__init__.py' "
+                f"| sed 's|./||;s|/__init__.py||;s|/|.|g' "
+                f"| grep -v 'test\\|setup\\|\\.venv\\|site-packages' | head -10",
+                timeout=15,
+            )
+            import_errors: list[str] = []
+            if syntax_out:
+                import_errors.append(f"Syntax errors:\n{syntax_out}")
+            for pkg in pkgs.splitlines():
+                pkg = pkg.strip()
+                if not pkg:
+                    continue
+                err = _run(
+                    f"cd {work_dir} && "
+                    f"PYTHONPATH={work_dir}/src:{work_dir}:{work_dir}/codes:$PYTHONPATH "
+                    f"python3 -c 'import {pkg}' 2>&1 | head -3",
+                    timeout=10,
+                )
+                if err and "Error" in err:
+                    import_errors.append(f"  import {pkg}: {err.splitlines()[0]}")
+
+            if import_errors:
+                sections.append("### IMPORT ERRORS\n" + "\n".join(import_errors))
+            else:
+                sections.append("### IMPORT ERRORS\nnone detected.")
+
+        # ------------------------------------------------------------------
+        # 3. LINTER ISSUES  (ruff preferred, flake8 fallback, eslint for JS/TS)
+        # ------------------------------------------------------------------
+        if lang == "python":
+            ruff_out = _run(
+                f"cd {work_dir} && "
+                f"ruff check . --select=E,F,I,UP,B --ignore=E501 "
+                f"--exclude=.venv,__pycache__,site-packages 2>&1 | head -40",
+                timeout=30,
+            )
+            if not ruff_out or "command not found" in ruff_out:
+                ruff_out = _run(
+                    f"cd {work_dir} && "
+                    f"python3 -m flake8 . --select=E,F,W --exclude=.venv,__pycache__ "
+                    f"--max-line-length=120 2>&1 | head -40",
+                    timeout=30,
+                )
+            sections.append(
+                f"### LINTER ISSUES\n{ruff_out or 'none (ruff/flake8 not available or no issues).'}"
+            )
+        elif lang in ("typescript", "javascript"):
+            eslint_out = _run(
+                f"cd {work_dir} && npx eslint . --ext .ts,.tsx,.js --max-warnings=0 2>&1 | head -30",
+                timeout=30,
+            )
+            sections.append(f"### LINTER ISSUES\n{eslint_out or 'none.'}")
+        elif lang == "rust":
+            cargo_out = _run(
+                f"cd {work_dir} && cargo clippy -- -D warnings 2>&1 | head -40",
+                timeout=60,
+            )
+            sections.append(f"### LINTER ISSUES\n{cargo_out or 'none.'}")
+
+        # ------------------------------------------------------------------
+        # 4. TODO / FIXME / HACK / BUG markers with context
+        # ------------------------------------------------------------------
+        if lang == "python":
+            todo_cmd = (
+                f"cd {work_dir} && "
+                f"grep -rn 'TODO\\|FIXME\\|HACK\\|BUG\\|XXX' --include='*.py' "
+                f"--exclude-dir=.venv --exclude-dir=__pycache__ -A1 2>/dev/null | head -60"
+            )
+        elif lang in ("typescript", "javascript"):
+            todo_cmd = (
+                f"cd {work_dir} && "
+                f"grep -rn 'TODO\\|FIXME\\|HACK\\|BUG' "
+                f"--include='*.ts' --include='*.tsx' --include='*.js' "
+                f"--exclude-dir=node_modules -A1 2>/dev/null | head -60"
+            )
+        elif lang == "go":
+            todo_cmd = (
+                f"cd {work_dir} && "
+                f"grep -rn 'TODO\\|FIXME\\|HACK\\|BUG' --include='*.go' -A1 2>/dev/null | head -60"
+            )
+        else:
+            todo_cmd = (
+                f"cd {work_dir} && "
+                f"grep -rn 'TODO\\|FIXME\\|HACK\\|BUG' "
+                f"--include='*.py' --include='*.ts' --include='*.go' --include='*.rs' "
+                f"-A1 2>/dev/null | head -60"
+            )
+        todo_out = _run(todo_cmd, timeout=20)
+        sections.append(f"### TODO/FIXME MARKERS\n{todo_out or 'none found.'}")
+
+        # ------------------------------------------------------------------
+        # 5. STUB CANDIDATES (explicit placeholders)
+        # ------------------------------------------------------------------
         stub_cmd = _STUB_PATTERNS.get(lang, _STUB_PATTERNS["python"])
-        stub_result = workspace.execute_command(
+        stub_out = _run(
             f"cd {work_dir} && {stub_cmd} 2>/dev/null | head -60", timeout=30
         )
-        if stub_result.stdout.strip():
-            lines.append(f"\nSTUB CANDIDATES ({lang}):")
-            lines.append(stub_result.stdout.strip())
-        else:
-            lines.append(f"\nSTUB CANDIDATES: none found with standard patterns for {lang}.")
+        sections.append(
+            f"### STUB CANDIDATES ({lang})\n{stub_out or 'none found with standard patterns.'}"
+        )
 
-        summary = "\n".join(lines)
-        print(f"[Commit0] Initial analysis complete ({len(summary)} chars)")
+        # ------------------------------------------------------------------
+        # 6. INCOMPLETE CODE (raise NotImplementedError, empty bodies, ...)
+        # ------------------------------------------------------------------
+        if lang == "python":
+            notimpl_out = _run(
+                f"cd {work_dir} && "
+                f"grep -rn 'raise NotImplementedError\\|raise NotImplemented' --include='*.py' "
+                f"--exclude-dir=.venv --exclude-dir=__pycache__ 2>/dev/null | head -30",
+                timeout=20,
+            )
+            # Also catch functions whose body is only a docstring + implicit None return
+            empty_fn_out = _run(
+                f"cd {work_dir} && "
+                f"python3 - <<'EOF'\n"
+                f"import ast, os, sys\n"
+                f"issues = []\n"
+                f"for root, dirs, files in os.walk('.'):\n"
+                f"    dirs[:] = [d for d in dirs if d not in ('.venv','__pycache__','site-packages')]\n"
+                f"    for f in files:\n"
+                f"        if not f.endswith('.py'): continue\n"
+                f"        path = os.path.join(root, f)\n"
+                f"        try:\n"
+                f"            tree = ast.parse(open(path).read())\n"
+                f"        except SyntaxError:\n"
+                f"            continue\n"
+                f"        for node in ast.walk(tree):\n"
+                f"            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)): continue\n"
+                f"            body = [n for n in node.body if not isinstance(n, ast.Expr)]\n"
+                f"            if len(body) == 0 and len(node.body) <= 1:\n"
+                f"                issues.append(f'{{path}}:{{node.lineno}}: {{node.name}}() — empty body')\n"
+                f"for i in issues[:20]: print(i)\n"
+                f"EOF",
+                timeout=30,
+            )
+            incomplete_parts = []
+            if notimpl_out:
+                incomplete_parts.append(f"raise NotImplementedError:\n{notimpl_out}")
+            if empty_fn_out:
+                incomplete_parts.append(f"Empty function bodies:\n{empty_fn_out}")
+            sections.append(
+                "### INCOMPLETE CODE\n"
+                + ("\n".join(incomplete_parts) if incomplete_parts else "none detected.")
+            )
+
+        # ------------------------------------------------------------------
+        # 7. STRUCTURAL ISSUES (Python: missing __init__.py, PYTHONPATH hints)
+        # ------------------------------------------------------------------
+        if lang == "python":
+            # Detect subdirectories that contain .py files but no __init__.py
+            missing_init = _run(
+                f"cd {work_dir} && "
+                f"find . -name '*.py' -not -path '*/.venv/*' -not -path '*/__pycache__/*' "
+                f"-not -path '*/site-packages/*' "
+                f"| xargs -I{{}} dirname {{}} | sort -u "
+                f"| while read d; do [ ! -f \"$d/__init__.py\" ] && echo \"$d\"; done "
+                f"| grep -v '^\\.\\?$' | head -20",
+                timeout=20,
+            )
+            # Detect shell scripts / Makefiles that set PYTHONPATH
+            path_hints = _run(
+                f"cd {work_dir} && "
+                f"grep -rn 'PYTHONPATH\\|sys.path' "
+                f"--include='*.sh' --include='Makefile' --include='*.py' "
+                f"--exclude-dir=.venv --exclude-dir=__pycache__ 2>/dev/null | head -20",
+                timeout=20,
+            )
+            structural_parts = []
+            if missing_init:
+                structural_parts.append(
+                    f"Dirs with .py files but no __init__.py (may cause import failures):\n{missing_init}"
+                )
+            if path_hints:
+                structural_parts.append(
+                    f"PYTHONPATH/sys.path hints (verify they are set correctly):\n{path_hints}"
+                )
+            sections.append(
+                "### STRUCTURAL ISSUES\n"
+                + ("\n".join(structural_parts) if structural_parts else "none detected.")
+            )
+
+        summary = "\n\n".join(sections)
+        print(f"[Commit0] Initial analysis complete ({len(summary)} chars, {len(sections)} sections)")
         return summary
 
     def evaluate(self, workspace):

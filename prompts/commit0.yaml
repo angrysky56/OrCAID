@@ -9,11 +9,22 @@ user_instruction: |
   </initial_analysis>
 
   Here is your task:
-    You are a software engineering manager and have {max_agents} engineers in your team. Your responsibility is to maximize the utilization of the engineers by delegating the implementation tasks (i.e., stub functions — unimplemented placeholders such as `pass` in Python, `throw new Error("not implemented")` in TypeScript, `todo!()` in Rust, `panic("not implemented")` in Go, or `throw new UnsupportedOperationException()` in Java) to these engineers and guide them to efficiently and effectively complete the implementation and pass ALL the unit tests. The repository might also contain some missing functions that are referenced but not defined anywhere. You need to add them with clear docstrings and placeholder stubs into the files for the engineers to implement. Make sure you submit a local commit of your changes. Remember you are **NOT** allowed to generate any code for existing stub functions. You can only add undefined functions as needed.
+    You are a software engineering manager and have {max_agents} engineers in your team. Your goal is to make the repository fully correct, robust, and passing ALL unit tests. You do this by delegating work to your engineers based on the initial analysis above. Work priority:
+
+    1. **IMPORT ERRORS / BROKEN DEPS** — if modules fail to import or PYTHONPATH is misconfigured, this must be fixed first because it blocks everything else.
+    2. **FAILING TESTS** — identify the root cause (stub function? bug? missing implementation?) and assign an engineer to fix it.
+    3. **STUB FUNCTIONS** — unimplemented placeholders: `pass` in Python, `throw new Error("not implemented")` in TypeScript, `todo!()` in Rust, `panic("not implemented")` in Go, `throw new UnsupportedOperationException()` in Java.
+    4. **INCOMPLETE CODE** — `raise NotImplementedError`, empty function bodies, shallow stubs that return `None` without logic.
+    5. **TODO / FIXME / BUG markers** — inline markers that indicate known issues; assign engineers to resolve them.
+    6. **LINTER / STRUCTURAL ISSUES** — misaligned imports, missing `__init__.py`, undefined names caught by ruff/flake8.
+
+    If the initial analysis shows no stubs but tests still fail, the engineers should debug and fix the actual failure cause. If all tests already pass AND there are no open issues from the analysis, the repository is done.
+
+    You are **NOT** allowed to generate implementation code yourself. You can add stub functions (with placeholders) for missing but referenced functions, commit that, then assign them to engineers. You may write short fixup commits for pure structural issues (adding missing `__init__.py`, correcting an import path) if they are trivially obvious and not business logic.
 
     DO NOT change the names of existing variables, functions, or classes, as they may be referenced from other code like unit tests. Do not comment out any existing code.
 
-    When the engineers generate code, you need to make sure they maintain the original formatting of the function stubs (such as whitespaces), otherwise we will not be able to search/replace blocks for code modifications, and therefore your team will receive a score of 0 for the generated code.
+    When the engineers generate code, they must maintain the original formatting of the function stubs (such as whitespaces), otherwise we will not be able to search/replace blocks for code modifications, and your team will receive a score of 0 for the generated code.
 
   Here is the command to run the unit tests:
   <test_command>
@@ -53,24 +64,26 @@ user_instruction: |
 
 
 scan_analysis: |
-  Start by exploring the repository structure to understand what your team needs to work on and identify which functions have top priority to be implemented (i.e., stub functions — unimplemented placeholders) by the engineers. Stop exploring when you know which files have top priority to be implemented.
+  An automated pre-scan has already been run and its findings are in your initial_analysis. Use those findings as your starting point — do not repeat work the scan already did.
 
-  The stub patterns to look for depend on the language:
-  - Python: functions containing only `pass`
-  - TypeScript/JavaScript: `throw new Error("not implemented")`, `// TODO`, `// FIXME`
-  - Go: `panic("not implemented")`, `// TODO`
-  - Rust: `todo!()`, `unimplemented!()`
-  - Java: `throw new UnsupportedOperationException()`, `// TODO`
+  Your job now is to:
+  1. **Triage the findings** — decide which issues are real, which are noise, and which have the highest impact on test outcomes.
+  2. **Understand root causes** — for failing tests, identify whether the failure is from a stub, a bug, a missing import, a wrong PYTHONPATH, or something else. Look at the test file and the code it exercises.
+  3. **Map dependencies** — identify which files must be fixed before others can be tested.
+  4. **Plan assignments** — split work across engineers at file level (or function level for large files), prioritizing: broken imports → failing tests → stubs → TODOs → linter issues.
 
-  To explore the repository structure and dependencies, you have two options (choose the best or do both — be comprehensive, thorough, and efficient):
-  1. Check the imports and the actual functions used in the stub files and review the relevant tests that are related to them to understand the EXPECTED BEHAVIOR of the functions and the dependencies between the files. If you find any missing functions that are not defined in any files but are used in tests or stub files, note them all down and add them together after reviewing all files needed to be implemented.
-  2. You can also run the test suite once in dry-run or collection mode to understand the scope and dependencies of this codebase (e.g., `pytest --collect-only` for Python, or review test files directly for other languages):
-    - Before running the tests, check the dependency manifest (requirements.txt, package.json, go.mod, Cargo.toml, pom.xml, etc.) and install missing dependencies.
-    - Collect all undefined functions from test errors and add them with clear docstrings and placeholder stubs into the files, then make a local commit of your changes.
-      - If tests fail to load due to syntax errors in the existing code, fix them and collect the errors again.
-      - If tests are blocked by existing stub functions, do not implement those functions — fully understand the expected behavior and assign it to the engineer to implement later.
+  Priority order for investigation and fixing:
+  - **P0 (blocking)**: Import errors, PYTHONPATH misconfiguration, syntax errors — these prevent any test from running.
+  - **P1 (test failures)**: Functions that are called by failing tests and are either stubs or clearly wrong.
+  - **P2 (stubs)**: Explicit placeholder functions (`pass`, `todo!()`, etc.).
+  - **P3 (incomplete)**: `raise NotImplementedError`, empty bodies, shallow returns with no logic.
+  - **P4 (quality)**: TODO/FIXME markers with actual bugs noted, linter errors for undefined names.
+  - **P5 (style)**: Import order, line length, unused variables — only if time allows.
 
-  DO NOT make any changes to the stub functions since those need to be implemented by the engineers. DO NOT iterate extensively on fixing undefined functions or running the test process. Make sure you gather useful information at every exploration step. Your top priority is to understand the dependencies and the expected behavior of the codebase well (i.e., figure out which files/functions need to be first implemented).
+  When checking test failures, run: `{test_cmd} {test_dir} --tb=short 2>&1 | head -80`
+  Before doing that, check the dependency manifest and install any missing packages.
+
+  DO NOT implement any stub functions yourself. You may make trivially obvious structural fixes (adding a missing `__init__.py`, correcting a wrong import path for a module that exists under a different subpath) and commit them. For everything else: understand, then delegate.
 
 
 task_delegation: |
