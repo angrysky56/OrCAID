@@ -40,11 +40,101 @@ from orcaid.core.utils import (
 from orcaid.tasks.commit0 import Commit0Task
 
 litellm.set_verbose = False
+
+
+def apply_patch_to_local(
+    patch_path: str,
+    repo_dir: str,
+    branch: str = "orcaid-patch",
+    commit_message: str = "feat: apply OrCAID multi-agent patch",
+) -> bool:
+    """Apply a generated patch.diff to a local git repository.
+
+    Creates (or checks out) ``branch`` in ``repo_dir``, applies the patch with
+    whitespace fixing, stages all changes, and commits.  Returns True on
+    success, False on any error.
+    """
+    import subprocess
+    import tempfile
+
+    def _run(cmd: list[str], cwd: str | None = None) -> tuple[str, str | None]:
+        try:
+            r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=True)
+            return r.stdout.strip(), None
+        except subprocess.CalledProcessError as e:
+            return "", (e.stderr.strip() or str(e))
+
+    repo_dir = str(Path(repo_dir).resolve())
+    if not Path(repo_dir, ".git").exists():
+        print(f"[AutoPatch] ERROR: '{repo_dir}' is not a git repository.")
+        return False
+
+    # Remove leading # comment lines that confuse git-apply
+    raw = Path(patch_path).read_text(encoding="utf-8")
+    cleaned_lines = []
+    for line in raw.splitlines(keepends=True):
+        if not cleaned_lines and line.startswith("#"):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "".join(cleaned_lines)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False) as tmp:
+        tmp.write(cleaned)
+        tmp_path = tmp.name
+
+    try:
+        # Check for uncommitted changes — stash if needed
+        status, _ = _run(["git", "status", "--porcelain"], cwd=repo_dir)
+        stashed = False
+        if status:
+            print("[AutoPatch] Stashing uncommitted changes...")
+            _, err = _run(["git", "stash", "--include-untracked"], cwd=repo_dir)
+            if err:
+                print(f"[AutoPatch] WARNING: stash failed — {err}")
+            else:
+                stashed = True
+
+        # Checkout / create target branch
+        _, branch_missing = _run(
+            ["git", "show-ref", "--verify", f"refs/heads/{branch}"], cwd=repo_dir
+        )
+        if branch_missing:
+            _, err = _run(["git", "checkout", "-b", branch], cwd=repo_dir)
+        else:
+            _, err = _run(["git", "checkout", branch], cwd=repo_dir)
+        if err:
+            print(f"[AutoPatch] ERROR checking out branch '{branch}': {err}")
+            return False
+
+        # Apply patch
+        _, err = _run(
+            ["git", "apply", "--whitespace=fix", tmp_path], cwd=repo_dir
+        )
+        if err:
+            print(f"[AutoPatch] ERROR applying patch: {err}")
+            return False
+
+        # Stage + commit
+        _run(["git", "add", "-A"], cwd=repo_dir)
+        commit_out, err = _run(["git", "commit", "-m", commit_message], cwd=repo_dir)
+        if err:
+            print(f"[AutoPatch] ERROR committing: {err}")
+            return False
+
+        sha, _ = _run(["git", "rev-parse", "--short", "HEAD"], cwd=repo_dir)
+        print(f"[AutoPatch] ✓ Patch committed to '{branch}' in {repo_dir} ({sha})")
+
+        if stashed:
+            _run(["git", "stash", "pop"], cwd=repo_dir)
+
+        return True
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 litellm.drop_params = True
 
 
 async def run_workflow_inner(
-    task, workflow_config, task_module, multi_agent=True, **_kwargs
+    task, workflow_config, task_module, multi_agent=True, patch_target=None, **_kwargs
 ):
     """Inner coroutine that executes the full manager/subagent workflow."""
     start_time = datetime.now()
@@ -634,6 +724,13 @@ async def run_workflow_inner(
                 print(f"- {exit_code_file}")
                 print(f"- {test_output_file}")
 
+                # Step 11: Apply patch to local repo (if requested)
+                if patch_target and base_commit:
+                    print("\n" + "-" * 60)
+                    print("Step 11: Apply Patch to Local Repo")
+                    print("-" * 60)
+                    apply_patch_to_local(str(patch_file), patch_target)
+
                 # Save final repo state as tarball
                 print("\n[Tarball] Saving final repo state...")
                 repo_name = task_module.config.repo_name
@@ -732,6 +829,12 @@ async def run_workflow_inner(
                         with open(patch_file, "w", encoding="utf-8") as f:
                             f.write(patch_content)
                         print(f"[Patch] Saved to {patch_file}")
+
+                        if patch_target:
+                            print("\n" + "-" * 60)
+                            print("Step 11: Apply Patch to Local Repo")
+                            print("-" * 60)
+                            apply_patch_to_local(str(patch_file), patch_target)
 
                     # total_time not available in self_improve return path
                     # (early return — runtime_seconds used at final summary instead)
@@ -924,6 +1027,8 @@ async def run_workflow_inner(
         print(f"- {workflow_config.output_dir}/runtime.txt")
         if multi_agent:
             print(f"- {workflow_config.output_dir}/patch.diff")
+            if patch_target:
+                print(f"  └─ patch auto-applied to: {patch_target} (branch: orcaid-patch)")
         repo_name = task_module.config.repo_name
         print(f"- {workflow_config.output_dir}/report.json")
         print(f"- {workflow_config.output_dir}/{repo_name}_pytest_exit_code.txt")
@@ -969,6 +1074,7 @@ def main(  # noqa: PLR0913
     rounds_of_chat=2,
     subagent_model=None,
     output_dir=None,
+    patch_target=None,
     **kwargs,
 ):
     """CLI entry point — configure and launch the OrCAID workflow.
@@ -985,6 +1091,9 @@ def main(  # noqa: PLR0913
         rounds_of_chat: Legacy alias for max_rounds_chat (default 2).
         subagent_model: Optional separate model for subagents.
         output_dir: Override the auto-generated output directory path.
+        patch_target: Optional local path to a git repo. When set, the generated
+            patch.diff is automatically applied to that repo on an 'orcaid-patch'
+            branch at the end of the run (commit0 multi-agent only).
         **kwargs: Task-specific flags (e.g. --repo, --base_branch, --paper_id).
     """
     model_name = model or os.getenv("LLM_MODEL", "litellm_proxy/neulab/gpt-5-mini")
@@ -1021,6 +1130,9 @@ def main(  # noqa: PLR0913
     if hasattr(task_module.config, "output_dir"):
         task_module.config.output_dir = workflow_config.output_dir
 
+    if patch_target:
+        print(f"[Config] patch_target={patch_target}  (patch will be auto-applied after run)")
+
     print(f"[Config] {workflow_config}")
 
     asyncio.run(
@@ -1029,6 +1141,7 @@ def main(  # noqa: PLR0913
             workflow_config,
             task_module,
             multi_agent=multi_agent,
+            patch_target=patch_target,
             **kwargs,
         )
     )

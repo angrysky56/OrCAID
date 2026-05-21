@@ -1,11 +1,6 @@
 # Configuration
 
-OrCAID is configured through a combination of **environment variables** (`.env`)
-and **CLI flags**. Environment variables set defaults; CLI flags override them.
-
----
-
-## Quick Start
+OrCAID is configured through **environment variables** (`.env`) and **CLI flags**. Environment variables set defaults; CLI flags override them.
 
 ```bash
 cp .env.example .env
@@ -21,7 +16,7 @@ cp .env.example .env
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `LLM_MODEL` | **Yes** | — | LiteLLM model identifier (e.g., `minimax/MiniMax-M2.7`, `openai/gpt-4o`) |
-| `MODEL` | No | Same as `LLM_MODEL` | Alias for `LLM_MODEL` (either works) |
+| `MODEL` | No | Same as `LLM_MODEL` | Alias for `LLM_MODEL` |
 | `LLM_API_KEY` | **Yes** | — | API key for the manager model provider |
 | `LLM_BASE_URL` | No | Provider default | Base URL for OpenAI-compatible endpoints |
 
@@ -35,7 +30,7 @@ Falls back to the manager model if not set.
 | `LLM_SUBAGENT_API_KEY` | No | `LLM_API_KEY` | API key for subagent model |
 | `LLM_SUBAGENT_BASE_URL` | No | `LLM_BASE_URL` | Base URL for subagent model |
 
-### Provider-Specific Variables
+### Provider-Specific
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -43,6 +38,14 @@ Falls back to the manager model if not set.
 | `MINIMAX_API_BASE` | No | — | MiniMax API base for auto-detection |
 | `ANTHROPIC_BASE_URL` | No | — | Anthropic-compatible API base URL |
 | `ANTHROPIC_API_KEY` | No | — | Anthropic API key |
+
+### Verification Bridge
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `ORCAID_RETRY_POLICY` | No | `kl` | Bridge retry policy: `kl` (keep-last, default) or `mop` (multi-outcome policy). Used to tag drift logs for A/B analysis. |
+| `ORCHESTRATOR_MEMORY_BASE` | No | `~/.orcaid/orchestrator-memory` | Root directory for verification outcomes, drift logs, and discovery index |
+| `ORCAID_BRIDGE_STORAGE` | No | `~/.orcaid/bridge` | Auxiliary bridge storage (cached checklists, etc.) |
 
 ### Docker / Workspace
 
@@ -56,13 +59,6 @@ Falls back to the manager model if not set.
 |---|---|---|---|
 | `JUDGE_PYTHON` | No | System Python | Python interpreter for the judge subprocess |
 
-### Orchestrator Memory
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `ORCHESTRATOR_MEMORY_BASE` | No | `~/.orcaid/orchestrator-memory` | Root directory for verification outcomes, drift logs, and discovery index |
-| `ORCAID_BRIDGE_STORAGE` | No | `~/.orcaid/bridge` | Auxiliary storage for the verification bridge (cached checklists, etc.) |
-
 ### Misc
 
 | Variable | Required | Default | Description |
@@ -73,26 +69,32 @@ Falls back to the manager model if not set.
 
 ## CLI Flags
 
-The `orcaid` CLI accepts the following arguments (passed to `cli.py:main()`):
+All flags are passed to `orcaid/cli.py:main()`. The `orcaid` entry point (from `pyproject.toml`) and `uv run python -m orcaid.cli` are equivalent.
 
 ### Common Flags
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--task` | str | — | Task type: `commit0`, `paperbench`, or `self_improve` |
+| `--task` | str | — | Task type: `commit0`, `paper2code`, `paperbench`, or `self_improve` |
 | `--model` | str | `$LLM_MODEL` | Override the manager model |
 | `--subagent_model` | str | `$LLM_SUBAGENT_MODEL` | Override the subagent model |
+| `--multi_agent` | bool | `true` | `true` = Manager + parallel engineers; `false` = single-agent baseline |
 | `--max_iterations` | int | `50` | Max LLM iterations for the manager |
 | `--max_subagents` | int | `2` | Number of parallel engineer subagents |
-| `--sub_iterations` | int | `80` | Max LLM iterations per subagent |
-| `--rounds_of_chat` | int | `2` | Number of assign-and-execute rounds |
+| `--sub_iterations` | int | `50` | Max LLM iterations per subagent |
+| `--max_rounds_chat` | int | `2` | Max task assignment rounds per engineer |
+| `--output_dir` | str | auto-generated | Override the output directory path |
+| `--patch_target` | str | — | Local git repo path. When set, `patch.diff` is automatically applied to an `orcaid-patch` branch in that repo after pytest completes (commit0 multi-agent only). |
+
+> **Note:** `--rounds_of_chat` is a legacy alias for `--max_rounds_chat`. Both work; `--max_rounds_chat` takes priority if both are supplied.
 
 ### Commit0 Flags
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--repo` | str | — | Target repository name (e.g., `minitorch`) |
-| `--dataset_path` | str | — | Path to a dataset spec file |
+| `--repo` | str | — | GitHub repo slug (e.g., `owner/repo`) or absolute local path |
+| `--base_branch` | str | auto-detect | Branch to clone (defaults to repo's default branch) |
+| `--dataset_path` | str | `data/commit0/commit0_combined` | Path to a local commit0 dataset spec |
 
 ### PaperBench Flags
 
@@ -110,14 +112,7 @@ The `orcaid` CLI accepts the following arguments (passed to `cli.py:main()`):
 
 ## Model Routing
 
-OrCAID uses [LiteLLM](https://docs.litellm.ai/) for multi-provider model
-routing. The model identifier follows the pattern:
-
-```
-provider/model-name
-```
-
-### Supported Providers
+OrCAID uses [LiteLLM](https://docs.litellm.ai/) for multi-provider routing. Model identifiers follow the pattern `provider/model-name`:
 
 | Provider | Prefix | Example |
 |---|---|---|
@@ -125,19 +120,11 @@ provider/model-name
 | OpenAI | `openai/` | `openai/gpt-4o` |
 | Anthropic | `anthropic/` | `anthropic/claude-opus-4-5` |
 
-### MiniMax Provider Note
-
-MiniMax models using the Anthropic-compatible endpoint
-(`https://api.minimax.io/anthropic`) are automatically rerouted through the
-OpenAI-compatible endpoint (`https://api.minimax.io/v1`) by the `build_llm_kwargs()`
-function in `orcaid/core/utils.py`. This ensures consistent behavior across
-the thinking/reasoning split feature.
+**MiniMax note:** Models using the Anthropic-compatible endpoint (`https://api.minimax.io/anthropic`) are automatically rerouted to the OpenAI-compatible endpoint (`https://api.minimax.io/v1`) by `build_llm_kwargs()` in `orcaid/core/utils.py` for consistent behavior.
 
 ---
 
 ## Orchestrator Memory Layout
-
-The verification bridge persists state to the orchestrator memory directory:
 
 ```
 ~/.orcaid/orchestrator-memory/
@@ -148,40 +135,33 @@ The verification bridge persists state to the orchestrator memory directory:
     └── discovery.yaml  # Aggregated performance stats (updated by cron)
 ```
 
-Override with `ORCHESTRATOR_MEMORY_BASE` environment variable.
+Override with `ORCHESTRATOR_MEMORY_BASE`. To migrate from a previous `~/.hermes/` path:
 
-> **Migrating from `~/.hermes/`:** If you previously used the `~/.hermes/orchestrator-memory`
-> path, set `ORCHESTRATOR_MEMORY_BASE=~/.hermes/orchestrator-memory` in your `.env` to
-> preserve your existing data.
+```bash
+export ORCHESTRATOR_MEMORY_BASE=~/.hermes/orchestrator-memory
+```
 
 ---
 
-## Cron Job Configuration
+## Cron Job
 
-The `orcaid-verification-indexer` console script sweeps orchestrator memory
-every 6 hours:
+The `orcaid-verification-indexer` console script sweeps orchestrator memory and rebuilds the discovery index. Add it to crontab to run every 6 hours:
 
 ```bash
-# Add to crontab:
-0 */6 * * * /path/to/.venv/bin/orcaid-verification-indexer
+0 */6 * * * /path/to/OrCAID/.venv/bin/orcaid-verification-indexer
 ```
 
-This updates `discovery.yaml` with:
-- Task type completion/failure counts
-- Per-profile drift rates
-- Last outcome timestamps
+This updates `discovery.yaml` with task type completion/failure counts, per-profile drift rates, and last outcome timestamps. The Manager reads this via `discovery_scan_for_orcaid()` before each run.
 
-The Manager reads this index via `discovery_scan_for_orcaid()` before each run.
+Without the cron job, verification still fires per-subagent — the index just stays empty until the first sweep.
 
 ---
 
 ## Prompt Templates
 
-Prompt templates are stored as YAML files in the `prompts/` directory:
+Templates are stored as YAML in `prompts/` and loaded by `load_prompts()` in `orcaid/core/utils.py`. Each key is a named prompt string with Python `.format()` placeholders.
 
-| File | Task Type | Contents |
+| File | Task | Keys |
 |---|---|---|
-| `prompts/commit0.yaml` | Commit0 | `scan_analyze`, `onboard`, `assign_task`, `followup`, `manager_final_review_all`, `background_exploration` |
-| `prompts/paperbench.yaml` | PaperBench | Same keys, tailored for paper reproduction |
-
-Templates use Python `.format()` placeholders (e.g., `{repo_dir}`, `{engineer_id}`).
+| `prompts/commit0.yaml` | commit0, self_improve | `user_instruction`, `scan_analysis`, `task_delegation`, `assign_task`, `single_agent_instruction`, `subagent_prompt`, `followup_prompt`, `conflict_resolution`, `auto_reassign`, `background_exploration`, `manager_final_review_all` |
+| `prompts/paperbench.yaml` | paperbench | Same key structure, tailored for paper reproduction |

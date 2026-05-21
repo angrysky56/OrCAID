@@ -358,7 +358,6 @@ class Commit0Task(TaskModule):
         repo_url = repo
         if repo_url.startswith("/"):
             # Absolute local path — copy directory into the container instead of cloning
-            import os
 
             local_path = repo
             print(f"[Commit0] Using local repo path: {local_path}")
@@ -448,18 +447,73 @@ class Commit0Task(TaskModule):
             f"cd {work_dir} && python -m pip install -e . 2>&1", timeout=300
         )
         if result.exit_code != 0:
-            print(f"[Commit0] Warning: pip install -e . failed: {result.stderr}")
+            # Retry ignoring version constraints (e.g. requires-python mismatch with container)
+            result2 = workspace.execute_command(
+                f"cd {work_dir} && python -m pip install -e . --ignore-requires-python 2>&1",
+                timeout=300,
+            )
+            if result2.exit_code != 0:
+                # Fall back to installing just the dependencies from requirements.txt
+                print(
+                    "[Commit0] pip install -e . failed, falling back to requirements install"
+                )
+                for req_file in (
+                    "requirements.txt",
+                    "requirements-dev.txt",
+                    "requirements_dev.txt",
+                ):
+                    workspace.execute_command(
+                        f"cd {work_dir} && [ -f {req_file} ] && "
+                        f"python -m pip install -r {req_file} --ignore-requires-python 2>&1 | tail -5 || true",
+                        timeout=300,
+                    )
+            else:
+                print("[Commit0] Installed with --ignore-requires-python")
 
-        verify_cmd = (
-            f"cd {work_dir} && "
-            f"python -c 'import {clean_name}; print(\"{clean_name} imported successfully\")' 2>/dev/null || "
-            f"python -c 'import {clean_name.lower()}; print(\"{clean_name.lower()} imported successfully\")'"
+        # Detect the actual importable package name from pyproject.toml or setup.py
+        # rather than guessing from the repo name (which is often wrong for script repos)
+        pkg_detect = (
+            f"cd {work_dir} && python3 - <<'EOF'\n"
+            f"import sys, os\n"
+            f"try:\n"
+            f"    import tomllib\n"
+            f"except ImportError:\n"
+            f"    import tomli as tomllib\n"
+            f"try:\n"
+            f"    with open('pyproject.toml', 'rb') as f:\n"
+            f"        data = tomllib.load(f)\n"
+            f"    pkgs = data.get('tool', {{}}).get('setuptools', {{}}).get('packages', [])\n"
+            f"    if pkgs:\n"
+            f"        print(pkgs[0])\n"
+            f"        sys.exit(0)\n"
+            f"except Exception:\n"
+            f"    pass\n"
+            f"# Fallback: first subdirectory containing __init__.py\n"
+            f"for d in sorted(os.listdir('.')):\n"
+            f"    if os.path.isdir(d) and os.path.exists(os.path.join(d, '__init__.py')):\n"
+            f"        if d not in ('tests', 'test', 'docs', '.venv', 'venv'):\n"
+            f"            print(d)\n"
+            f"            sys.exit(0)\n"
+            f"EOF"
         )
-        verify_result = workspace.execute_command(verify_cmd, timeout=30)
-        if verify_result.exit_code == 0:
-            print(f"[Commit0] Package verification: {verify_result.stdout.strip()}")
+        pkg_result = workspace.execute_command(pkg_detect, timeout=15)
+        pkg_name = pkg_result.stdout.strip() if pkg_result.exit_code == 0 else ""
+
+        if pkg_name:
+            verify_result = workspace.execute_command(
+                f"cd {work_dir} && python -c 'import {pkg_name}; print(\"{pkg_name} imported successfully\")'",
+                timeout=30,
+            )
+            if verify_result.exit_code == 0:
+                print(f"[Commit0] Package verification: {verify_result.stdout.strip()}")
+            else:
+                print(
+                    f"[Commit0] Note: '{pkg_name}' not importable (script-based repo or missing deps — tests may still run fine)"
+                )
         else:
-            print("[Commit0] Warning: Package import verification failed")
+            print(
+                "[Commit0] Note: No importable package detected (script-based repo — tests run via pytest directly)"
+            )
 
         print("[Commit0] Installing pytest plugins...")
         uv = workspace.execute_command(
